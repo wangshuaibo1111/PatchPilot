@@ -13,7 +13,29 @@ def test_defaults_follow_plan() -> None:
     assert settings.checkpoint_backend == "memory"
     assert settings.llm_provider == "stub"
     assert settings.budget_max_attempts == 3
-    assert settings.llm_model == "deepseek-chat"
+    assert settings.llm_model == "deepseek-flash"
+
+
+def test_code_defaults_match_env_example_template() -> None:
+    """代码默认值必须与 `.env.example` 模板一致（防"两份互相矛盾的模板"）。
+
+    第二十一轮非阻塞项：`llm_base_url` 统一了裸域名，但 `llm_model` 仍留在 `deepseek-chat`，
+    于是"模板说 deepseek-flash、代码默认说 deepseek-chat"，且此前无用例约束这一点。
+    这里逐项比对两者的模型相关配置。
+    """
+    from pathlib import Path
+
+    settings = Settings(_env_file=None)
+    template = Path(__file__).resolve().parents[1] / ".env.example"
+    values = {}
+    for line in template.read_text(encoding="utf-8").splitlines():
+        if line.startswith("PP_LLM_") and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+
+    assert values["PP_LLM_BASE_URL"] == settings.llm_base_url
+    assert values["PP_LLM_MODEL"] == settings.llm_model
+    assert values["PP_LLM_SMALL_MODEL"] == settings.llm_small_model
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

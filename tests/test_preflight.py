@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -612,6 +613,23 @@ def test_is_writable_dir_false_for_missing_dir(tmp_path: Path) -> None:
     assert _is_writable_dir(tmp_path / "does" / "not" / "exist") is False
 
 
+def test_is_writable_dir_false_when_path_is_a_file(tmp_path: Path) -> None:
+    """路径是**普通文件**而非目录 → False，且不改写该文件。
+
+    变异自证结果（规程 8.5）：删掉 `path.is_dir()` 守卫后**本条用例仍绿**，
+    因为探针会以 `NotADirectoryError`（OSError 子类）收场、行为仍是 False
+    ——即该守卫在这里是**行为等价的冗余**。保留用例是因为它钉住了"文件不被当作可写目录"
+    这一**契约**；但不得据此声称 `is_dir()` 守卫"已被覆盖"。
+    """
+    from patchpilot.core.preflight import _is_writable_dir
+
+    a_file = tmp_path / "not-a-dir.txt"
+    a_file.write_text("x", encoding="utf-8")
+
+    assert _is_writable_dir(a_file) is False
+    assert a_file.read_text(encoding="utf-8") == "x", "不得改写该文件内容"
+
+
 def test_is_writable_dir_false_when_write_fails(tmp_path: Path, monkeypatch) -> None:
     """写探针反例：写入抛 OSError 时返回 False（这是"环境问题"分类的唯一判据）。"""
     from patchpilot.core import preflight as preflight_module
@@ -649,6 +667,103 @@ def test_unwritable_basetemp_is_reported_as_environment_issue(tmp_path: Path, mo
 
     assert check.status == "fail"
     assert check.detail.startswith("环境问题"), check.detail[:160]
+
+
+def test_prune_stale_basetemps_only_removes_old_run_dirs(tmp_path: Path) -> None:
+    """basetemp 回收必须**保守**：只删陈旧的、本工具命名的 `run-<pid>-<hex6>` 目录。
+
+    第十三/十四轮非阻塞项：此前每次门禁都会留下一个 `run-<pid>-<hex>` 目录，累积 100+。
+
+    **关键设计**：`current` 与 `keep-me` 的 mtime 也推到 2 小时前——
+    否则它们会被 mtime 判据先跳过，`entry == current` 与命名模式这两个
+    "绝不误删"的守卫就永远不可达（第十四轮变异 M19/M20 正是这样存活的）。
+    """
+    from patchpilot.core.preflight import _prune_stale_basetemps
+
+    base = tmp_path / "pytest-tmp"
+    base.mkdir()
+    current = base / "run-1-aaaaaa"
+    current.mkdir()
+    stale = base / "run-2-bbbbbb"
+    stale.mkdir()
+    (stale / "leftover.txt").write_text("x", encoding="utf-8")
+    fresh = base / "run-3-cccccc"  # 模拟并发运行中
+    fresh.mkdir()
+    not_a_run = base / "keep-me"
+    not_a_run.mkdir()
+    # 命名相似但**不是**本工具的目录（前缀相同、格式不符）
+    foreign = base / "run-notmine-old"
+    foreign.mkdir()
+    old_time = time.time() - 7200
+    for path in (current, stale, not_a_run, foreign):
+        os.utime(path, (old_time, old_time))
+
+    _prune_stale_basetemps(base, current=current)
+
+    assert current.exists(), "本次运行目录即使很旧也不得被删"
+    assert not stale.exists(), "陈旧的 run-<pid>-<hex6> 应被回收"
+    assert fresh.exists(), "并发中的新目录不得被删"
+    assert not_a_run.exists(), "非 run-* 目录即使很旧也不得被删"
+    assert foreign.exists(), "命名不符的 run-* 目录（非本工具生成）不得被删"
+
+
+def test_prune_stale_basetemps_leaves_stale_named_regular_files_alone(tmp_path: Path) -> None:
+    """陈旧但**是普通文件**、且命名恰好匹配 `run-<pid>-<hex6>` 的对象不得被删。
+
+    第十八轮 BLOCKING：`_prune_stale_basetemps` 里的 `not entry.is_dir()` 是
+    **冗余纵深防御**（删掉它全套仍绿——`shutil.rmtree` 对普通文件抛
+    `NotADirectoryError`，被 `except OSError` 吞掉，文件仍在）。
+    本条用例钉的是**契约**：这类文件必须原样保留、内容不变。
+    注意它同样**杀不掉**那个守卫（等价变异），守卫本身已按 §8.5 第 5 条就地登记为冗余。
+    """
+    from patchpilot.core.preflight import _prune_stale_basetemps
+
+    base = tmp_path / "pytest-tmp"
+    base.mkdir()
+    current = base / "run-1-aaaaaa"
+    current.mkdir()
+    stale_file = base / "run-2-bbbbbb"  # 命名像运行目录，但其实是文件
+    stale_file.write_text("important", encoding="utf-8")
+    old_time = time.time() - 7200
+    os.utime(stale_file, (old_time, old_time))
+
+    _prune_stale_basetemps(base, current=current)
+
+    assert stale_file.is_file(), "普通文件不得被当成可删目录"
+    assert stale_file.read_text(encoding="utf-8") == "important", "内容不得被改动"
+    assert current.exists()
+
+
+def test_prune_stale_basetemps_boundary_and_error_paths(tmp_path: Path) -> None:
+    """边界（阈值附近各留 1 秒余量）+ 父目录不存在/是文件。
+
+    不用"mtime 恰好等于阈值"：`time.time()` 在写 mtime 与函数内部重算 `cutoff`
+    之间会走掉若干微秒，那个写法测的是时钟抖动而不是逻辑。
+    """
+    from patchpilot.core.preflight import _prune_stale_basetemps
+
+    base = tmp_path / "pytest-tmp"
+    base.mkdir()
+    current = base / "run-1-aaaaaa"
+    current.mkdir()
+    just_inside = base / "run-2-bbbbbb"  # 距阈值还差 1 秒 → 应保留
+    just_inside.mkdir()
+    just_outside = base / "run-3-cccccc"  # 比阈值再老 1 秒 → 应删除
+    just_outside.mkdir()
+    now = time.time()
+    os.utime(just_inside, (now - 3599.0, now - 3599.0))
+    os.utime(just_outside, (now - 3601.0, now - 3601.0))
+
+    _prune_stale_basetemps(base, current=current, max_age_s=3600.0)
+
+    assert just_inside.exists(), "未超过阈值的目录应保留"
+    assert not just_outside.exists(), "超过阈值的目录应被回收"
+
+    # 父目录不存在 / 是文件 → 不抛异常（尽力而为的清理绝不能失败门禁）
+    _prune_stale_basetemps(tmp_path / "missing", current=current)
+    a_file = tmp_path / "a-file"
+    a_file.write_text("x", encoding="utf-8")
+    _prune_stale_basetemps(a_file, current=current)
 
 
 def test_report_carries_pytest_collect_errors(tmp_path: Path) -> None:

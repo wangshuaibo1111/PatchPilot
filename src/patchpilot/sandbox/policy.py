@@ -13,10 +13,18 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-DEFAULT_IMAGE = "python:3.12-slim"
+# 内存下限：低于此值容器几乎必然起不来（6 MiB 是 docker 侧常见的最小可用值）。
+# 存在的意义是让 `memory="0"` 这类"静默取消上限"的取值在构造期就被拒绝。
+MIN_MEMORY_BYTES = 6 * 1024**2
+
+# 沙箱执行镜像：**自建**（`docker/sandbox/Dockerfile`），因为官方 `python:3.12-slim`
+# 不含 pytest，而容器是 `--network none`、不可能在容器里 `pip install`。
+# tag 锁定到具体版本（PLAN §6 可复现纪律）；构建命令见该 Dockerfile 顶部注释。
+DEFAULT_IMAGE = "patchpilot-sandbox:0.1.0-py312"
 
 # 绝不允许出现在最终命令行里的裸参数
 NEVER_ALLOWED_TOKENS = (
@@ -65,6 +73,11 @@ REQUIRED_INVARIANTS: tuple[tuple[str, str | None], ...] = (
     ("--cap-drop", "ALL"),
     ("--security-opt", "no-new-privileges"),
     ("--user", None),
+    # 资源上限也要有存在性不变量：否则 `--memory 0` 这类取值会让熔断静默失效
+    # （真机：rc=0、无告警、`docker inspect` 得 Memory=0，对照默认 4g = 4294967296）。
+    ("--memory", None),
+    ("--memory-swap", None),
+    ("--pids-limit", None),
 )
 
 
@@ -110,12 +123,47 @@ class SandboxPolicy:
     labels: tuple[tuple[str, str], ...] = ()
     hostname: str | None = None
     stop_timeout_s: int | None = None
+    # **显式声明的沙箱根**：bind mount 的宿主源必须落在它之下。
+    # 默认取系统临时目录（副本按约定就建在那里）；生产上由驱动层显式指定一个专用工作根。
+    # 为什么需要一个"根"而不只是黑名单（第二十二轮 BLOCKING）：挂载源的威胁面是
+    # "任意宿主目录"——枚举敏感目录（家目录、系统盘、仓库）永远列不全，真机实测
+    # `Path.home()` 就能绕过"是 CWD 祖先"这条规则（家目录与仓库不在同一棵树上）。
+    # 改为**白名单式包含判定**后，逃逸面被压到"显式声明的根之内"，可审计、可测试。
+    sandbox_root: Path | None = None
 
     def __post_init__(self) -> None:
+        # 字符串字段先做类型检查：否则 `image=1` / `workdir=None` / `run_as=1` 会在下面
+        # 的 `endswith` / `startswith` / `strip` 处抛**裸 AttributeError**，
+        # 而调用方的捕获口径只有 SandboxPolicyError（第十三轮非阻塞项）。
+        _require_str("image", self.image)
+        _require_str("workdir", self.workdir)
+        _require_str("run_as", self.run_as)
+        _require_str("tmpfs_size", self.tmpfs_size)
+        _require_str("memory", self.memory)
         if not self.image:
             raise SandboxPolicyError("镜像不能为空")
+        # **镜像位是唯一处于 flag 位置的字段**：它被写在 argv 里"下一个 flag 之前"，
+        # 所以一旦允许它像 flag，docker 的 pflag 就会把它当选项解析。
+        # 真机判决性证据（第二十二轮）：`image="-vC:\\…\\hostsecret:/mnt"` 构造成功，
+        # `build_run_args` 把它写在镜像位，**docker pflag 的短选项粘连**（`-v<value>`）
+        # 把它解析成 `--volume` → 容器经 `/mnt/SECRET.txt` 读到宿主文件，rc=0。
+        # 这正是本模块第 8 轮被 `-v<host>:/mnt` 击穿的**同一条通道经 image 字段复发**。
+        if self.image.startswith("-"):
+            raise SandboxPolicyError(
+                f"镜像名不得以 `-` 开头（会被 docker 当选项解析）: {self.image!r}"
+            )
+        if any(ch in self.image for ch in " \t\n\x00"):
+            raise SandboxPolicyError(f"镜像名不得含空白或 NUL: {self.image!r}")
         if self.image.endswith(":latest") or ":" not in self.image:
             raise SandboxPolicyError(f"镜像必须锁定具体 tag，禁止 latest/无 tag: {self.image}")
+        # 类型面：显式检查，避免把裸 TypeError/ValueError 抛给只捕获
+        # SandboxPolicyError 的调用方（第十二轮非阻塞项）。必须在比较之前做，
+        # 否则 `cpus="x"` 会在 `<= 0` 处抛裸 TypeError。
+        _require_number("cpus", self.cpus)
+        _require_int("pids_limit", self.pids_limit)
+        _require_number("timeout_s", self.timeout_s)
+        if self.stop_timeout_s is not None:
+            _require_int("stop_timeout_s", self.stop_timeout_s)
         if self.cpus <= 0:
             raise SandboxPolicyError("cpus 必须为正数")
         if self.pids_limit <= 0:
@@ -126,14 +174,25 @@ class SandboxPolicy:
             raise SandboxPolicyError("stop_timeout_s 不能为负数")
         _validate_run_as(self.run_as)
         _validate_workdir(self.workdir)
+        _validate_tmpfs_size(self.tmpfs_size)
+        _validate_memory(self.memory)
         _validate_hostname(self.hostname)
+        # `env`/`labels` 必须是"二元组序列"：传 dict / list / str 时，解包会抛**裸
+        # ValueError**（`not enough values to unpack`），与"调用方只捕获 SandboxPolicyError"
+        # 的口径冲突（第十四轮非阻塞项）。先检查容器形态，再检查每对的内容。
+        _require_pairs("env", self.env)
+        _require_pairs("labels", self.labels)
         for key, value in self.env:
-            if not key or any(ch in key for ch in "= \t\n"):
+            _require_str(f"env[{key!r}] 的取值", value)
+            _require_str("env 的变量名", key)
+            if not key or any(ch in key for ch in "= \t\n\x00"):
                 raise SandboxPolicyError(f"非法环境变量名: {key!r}")
             if any(ch in value for ch in " \t\n\x00"):
                 raise SandboxPolicyError(f"环境变量 {key} 的取值不得含空白: {value!r}")
         for key, value in self.labels:
-            if not key or any(ch in key for ch in "= \t\n"):
+            _require_str(f"labels[{key!r}] 的取值", value)
+            _require_str("label 名", key)
+            if not key or any(ch in key for ch in "= \t\n\x00"):
                 raise SandboxPolicyError(f"非法 label 名: {key!r}")
             if any(ch in value for ch in " \t\n\x00"):
                 raise SandboxPolicyError(f"label {key} 的取值不得含空白: {value!r}")
@@ -165,16 +224,10 @@ def _validate_run_as(run_as: str) -> None:
             raise SandboxPolicyError(
                 f"run_as 必须是 ASCII 数值 uid/gid: {run_as!r}"
             )
-        try:
-            value = int(piece, 10)
-        except ValueError as exc:
-            raise SandboxPolicyError(
-                f"run_as 必须是数值 uid/gid（非 0 段也不接受非数字）: {run_as!r}"
-            ) from exc
+        # 到这里 `piece` 已确定是 ASCII 数字 → 必为非负，故无需再判 `< 0`（死分支）。
+        value = int(piece, 10)
         if value == 0:
             raise SandboxPolicyError(f"禁止以 root 运行（uid/gid 为 0）: {run_as!r}")
-        if value < 0:
-            raise SandboxPolicyError(f"run_as 不能为负数: {run_as!r}")
 
 
 def _validate_workdir(workdir: str) -> None:
@@ -204,12 +257,181 @@ def _validate_workdir(workdir: str) -> None:
             f"workdir 只允许 /workspace 或 /tmp 子树（避免遮蔽 rootfs）: {workdir!r}"
         )
 
+
+def _validate_tmpfs_size(tmpfs_size: str) -> None:
+    """tmpfs 大小会拼进 `--tmpfs /tmp:rw,noexec,nosuid,size=<value>` 的**逗号串**。
+
+    真机判决性证据（第十二轮非阻塞项）：`tmpfs_size="512m,exec"` 构造期放行，
+    `docker inspect` 显示 `/tmp:rw,noexec,nosuid,size=512m,exec`——重复选项**后写覆盖**，
+    内核取 `exec`，容器内脚本可执行（基线 `512m` 下同一脚本被 `noexec` 拦下）。
+    即"只读 rootfs + tmpfs"承诺里的 `noexec` 可被字段值静默取消（仍未获 root、
+    无宿主挂载、无网络，故不是逃逸，但必须堵住）。与 `_validate_workdir` 同一类注入面。
+    """
+    if not isinstance(tmpfs_size, str):
+        raise SandboxPolicyError(f"tmpfs_size 类型非法: {type(tmpfs_size).__name__}")
+    if not tmpfs_size or any(ch in tmpfs_size for ch in ", \t\n\x00"):
+        raise SandboxPolicyError(
+            f"tmpfs_size 不得为空或含逗号/空白（逗号会注入 tmpfs 挂载选项）: {tmpfs_size!r}"
+        )
+
+
+def _validate_memory(memory: str) -> None:
+    """内存上限是本模块唯一没有任何校验的资源字段——真机证据表明它可以被**静默取消**。
+
+    缺陷记录（第十三轮 BLOCKING）：`memory="0"` / `"0b"` 构造期放行 →
+    `--memory 0 --memory-swap 0`，`assert_safe` 与 `assert_required_invariants` 都不覆盖
+    `--memory` → 真机 `docker run` **rc=0、无任何告警**，`docker inspect` 得
+    `HostConfig.Memory=0 MemorySwap=0`（对照默认 `4g` = 4294967296）。
+    同模块对 `cpus=0`/`pids_limit=0`/`timeout_s=0` 都明确拒绝，唯独内存可无声抹掉——
+    属"资源熔断失效/静默错误结果"。
+
+    另外 `memory=1` / `True` 会从 `assert_safe` 抛**裸 AttributeError**，
+    与"调用方只需捕获 SandboxPolicyError"的口径冲突，所以这里先做类型检查。
+    """
+    if not isinstance(memory, str) or isinstance(memory, bool):
+        raise SandboxPolicyError(
+            f"memory 必须是字符串（如 '4g'）: {memory!r}（类型 {type(memory).__name__}）"
+        )
+    text = memory.strip()
+    if not text:
+        raise SandboxPolicyError("memory 不能为空")
+    # 校验对象必须与**生成对象**一致：此前用 `text`（strip 后）检查、却把原始 `memory`
+    # 写进 argv，于是 `"4G "`/`"\t4g"` 能过构造期，到 docker 才以 125 失败
+    # （第十四轮非阻塞项）。这里直接拒绝空白，让"校验通过"等价于"argv 里的字面量合法"。
+    if any(ch in memory for ch in " \t\n\x00"):
+        raise SandboxPolicyError(f"memory 不得含空白或 NUL: {memory!r}")
+    # `isascii()` 是**冗余纵深防御**（第十四轮复审指出：非 ASCII 取值如 `'４g'`
+    # 本来就会被 `_parse_size_bytes` 的 `isdigit()` 拒掉，删掉它全绿）。
+    # 保留是让"非 ASCII"这类输入有独立出口；不声称它被用例钉住。
+    if not memory.isascii():
+        raise SandboxPolicyError(f"memory 必须是 ASCII: {memory!r}")
+    value = _parse_size_bytes(text)
+    if value is None:
+        raise SandboxPolicyError(
+            f"memory 必须是整数+单位的形式（如 '512m'、'4g'、'104857600'）: {memory!r}"
+        )
+    # 解析器只返回正整数或 None，故此处不再判 `value <= 0`（原为冗余死分支）。
+    if value < MIN_MEMORY_BYTES:
+        raise SandboxPolicyError(
+            f"memory 过小（{memory!r} < {MIN_MEMORY_BYTES} 字节），容器无法运行"
+        )
+
+
+def _parse_size_bytes(text: str) -> int | None:
+    """把 docker 的容量写法（`512m` / `4g` / `104857600`）解析成字节数。
+
+    只接受单字母后缀 b/k/m/g（docker 本身接受的写法）；解析失败返回 None。
+    """
+    suffixes = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+    number = text[:-1] if text[-1:].lower() in "bkmg" else text
+    suffix = text[len(number) :].lower()
+    if suffix not in suffixes or not number.isdigit():
+        return None
+    return int(number) * suffixes[suffix]
+
+
 def _validate_hostname(hostname: str | None) -> None:
-    """hostname 会直接进 `--hostname <value>`，不能含空白或注入用的字符。"""
+    """hostname 会直接进 `--hostname <value>`。
+
+    除空白/逗号/NUL 外，还要拒绝**前导 `-`**（可能被 docker 当成 flag 解析）
+    与 `/`（hostname 里 `/` 是无效值，真机上会被原样写进 `/etc/hostname`）。
+    """
     if hostname is None:
         return
-    if not hostname or any(ch in hostname for ch in " \t\n\x00,"):
+    if (
+        not isinstance(hostname, str)
+        or not hostname
+        or hostname.startswith("-")
+        or any(ch in hostname for ch in " \t\n\x00,/")
+    ):
         raise SandboxPolicyError(f"非法 hostname: {hostname!r}")
+
+
+def _require_pairs(name: str, value: object) -> None:
+    """`env`/`labels` 必须是"二元组序列"，且每个元素本身是长度 2 的序列。
+
+    否则 `for key, item in value` 会抛裸 `ValueError: not enough values to unpack`
+    （传 dict 时迭代出的是 key、传 str 时迭代出的是字符），调用方无法用
+    `SandboxPolicyError` 捕获。显式检查后给出可操作的错误信息。
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(value, (tuple, list)):
+        raise SandboxPolicyError(
+            f"{name} 必须是 (名, 取值) 二元组的序列，实际是 {type(value).__name__}"
+        )
+    for pair in value:
+        if isinstance(pair, (str, bytes)) or not isinstance(pair, (tuple, list)):
+            raise SandboxPolicyError(
+                f"{name} 的每一项都必须是 (名, 取值) 二元组，实际是 {type(pair).__name__}"
+            )
+        if len(pair) != 2:
+            raise SandboxPolicyError(
+                f"{name} 的每一项必须恰好 2 个元素，实际 {len(pair)} 个: {pair!r}"
+            )
+
+
+def _require_str(name: str, value: object) -> None:
+    """字符串字段的显式类型检查（把裸 AttributeError 收敛成 SandboxPolicyError）。"""
+    if not isinstance(value, str):
+        raise SandboxPolicyError(
+            f"{name} 必须是字符串: {value!r}（类型 {type(value).__name__}）"
+        )
+
+
+def _require_int(name: str, value: object) -> None:
+    """整数字段的显式类型检查（`bool` 是 `int` 子类，必须单独排除）。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SandboxPolicyError(f"{name} 必须是整数（不接受布尔值/浮点）: {value!r}")
+
+
+def _require_number(name: str, value: object) -> None:
+    """数值字段的显式类型检查：让调用方只需捕获 `SandboxPolicyError` 一种异常。
+
+    缺陷记录（第十二轮）：`cpus="x"` / `pids_limit=1.5` / `stop_timeout_s="--privileged"`
+    会抛裸 `TypeError`/`ValueError`，而调用方的捕获口径是 `SandboxPolicyError`。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SandboxPolicyError(f"{name} 必须是数值: {value!r}")
+
+
+def _validate_mount_source(workspace: Path, sandbox_root: Path | None) -> None:
+    """校验 bind mount 的宿主源目录——容器可见面的**唯一决定点**。
+
+    真机判决性证据（第二十二轮，Docker 29.5.2）：
+      - `workspace="C:\\\\"` → `--mount type=bind,src=C:\\,dst=/workspace` rc=0，
+        容器 `ls /workspace` 列出 `Program Files`/`Users`/…（**整个系统盘可读写**）；
+      - `workspace=<宿主目录>` → 容器 `cat` 到宿主机密文件；
+      - `workspace=".."` → 被 docker 客户端按**它自己的 cwd**静默解析成宿主目录。
+    三条都能通过 `assert_safe` 与 `assert_required_invariants`，即此前**没有任何守卫**。
+
+    规则（逐条对应上面的证据）：
+      1. 必须是**绝对**路径——堵住 `".."` / `"src"` 被客户端自行解析；
+      2. 必须**存在且是目录**；
+      3. 不得是**文件系统锚点**（`/`、`C:\\`）——堵住整盘挂载；
+      4. 必须落在**显式声明的沙箱根**之下（`sandbox_root`，默认系统临时目录）——
+         白名单式包含判定。仅靠"不是 CWD 祖先"这类黑名单不够：真机实测
+         `Path.home()` 因与仓库不同盘而绕过该规则。
+
+    `Path(ws).parent == Path(ws)` 是"文件系统根"的跨平台判据；比较前统一 `.resolve()`，
+    避免 `a/../..` 之类绕过。
+    """
+    if not workspace.is_absolute():
+        raise SandboxPolicyError(
+            f"沙箱挂载源必须是绝对路径（相对路径会被 docker 按客户端 cwd 解析）: {workspace}"
+        )
+    resolved = workspace.resolve()
+    if resolved.parent == resolved:
+        raise SandboxPolicyError(f"沙箱挂载源不得是文件系统根（整盘/整机暴露）: {resolved}")
+    if not resolved.exists():
+        raise SandboxPolicyError(f"沙箱挂载源不存在: {resolved}")
+    if not resolved.is_dir():
+        raise SandboxPolicyError(f"沙箱挂载源必须是目录: {resolved}")
+
+    root = (sandbox_root or Path(tempfile.gettempdir())).resolve()
+    if resolved != root and not resolved.is_relative_to(root):
+        raise SandboxPolicyError(
+            f"沙箱挂载源必须落在声明的沙箱根之下（避免把任意宿主目录交给容器）: "
+            f"{resolved} 不在 {root} 之下"
+        )
 
 
 def build_run_args(
@@ -220,12 +442,33 @@ def build_run_args(
     command: list[str],
 ) -> list[str]:
     """生成 `docker run` 参数。这是唯一允许拼装安全参数的入口。"""
+    # 生成期也要做类型检查：`container_name=1` / `command=[None]` / `workspace=None`
+    # 此前会抛裸 `TypeError`/`AttributeError`（第十四轮非阻塞项）。
+    _require_str("container_name", container_name)
+    if isinstance(command, (str, bytes)) or not isinstance(command, (tuple, list)):
+        raise SandboxPolicyError(
+            f"command 必须是字符串序列，实际是 {type(command).__name__}"
+            "（传字符串会按字符展开）"
+        )
     if not command:
         raise SandboxPolicyError("命令不能为空")
+    for index, token in enumerate(command):
+        _require_str(f"command[{index}]", token)
+    if not isinstance(workspace, (str, os.PathLike)):
+        raise SandboxPolicyError(
+            f"workspace 必须是路径或字符串，实际是 {type(workspace).__name__}"
+        )
     if not container_name or any(ch in container_name for ch in " \t\n/"):
         raise SandboxPolicyError(f"非法容器名: {container_name!r}")
 
     workspace = Path(workspace)
+    # **宿主暴露面的唯一守卫**（第二十二轮 BLOCKING）：`workspace` 直接进
+    # `--mount type=bind,src=<workspace>,dst=<workdir>`，是"容器能看到宿主什么"的
+    # 唯一决定点。此前它只做了类型检查，**没有任何安全校验**——真机实测
+    # `workspace="C:\\"` → 整个 C 盘可读写挂进 `/workspace`（容器列出 Program Files/Users），
+    # `workspace=<宿主目录>` → 容器直接读到宿主机密文件，`workspace=".."` → 被 docker 客户端
+    # 按自己的 cwd 静默解析成宿主目录（两个守卫全过、rc=0）。
+    _validate_mount_source(workspace, policy.sandbox_root)
     args: list[str] = [
         "docker",
         "run",
@@ -352,6 +595,27 @@ def assert_required_invariants(args: list[str]) -> None:
     # 非 root：按**数值**判定，覆盖 00:0 / 0:1000 / root:root 等变体
     for user in _flag_values(args, "--user"):
         _validate_run_as(user)
+    # 资源上限不得被"0"静默取消（真机：`--memory 0` 会让 docker 不设上限且不告警）。
+    #
+    # **不要用字面量表**：第一版写成 `value in {"0","0b","0k","0m","0g"}`，而真机对
+    # `0G`/`00`/`0000`/`0B` 同样报 rc=0 且 `HostConfig.Memory=0`——大小写与多位零都是洞，
+    # 且删表项不会有任何用例变红（第十四轮 BLOCKING，同一类缺陷在同一层的复发）。
+    # 改为**与 `_validate_memory` 共用的解析器**：只有"能解析出正值"才算合法。
+    for flag in ("--memory", "--memory-swap", "--pids-limit"):
+        for value in _flag_values(args, flag):
+            payload = str(value).strip()
+            if flag == "--pids-limit":
+                # `isdigit()` 已排除负号与空串，所以只需判零——`<= 0` 与 `== 0`
+                # 在这里**行为等价**（变异自证：`M-pids-branch-sign` 存活，属等价变异，
+                # 不是覆盖缺口）。写成 `== 0` 以免读者误以为还挡着负值。
+                if not payload.isdigit() or int(payload) == 0:
+                    raise SandboxPolicyError(f"{flag} 必须为正整数: {value!r}")
+                continue
+            size = _parse_size_bytes(payload)
+            if size is None or size <= 0:
+                raise SandboxPolicyError(
+                    f"{flag} 不得为 0（等于取消该资源上限）: {value!r}"
+                )
 
 
 def resolve_within(root: Path, candidate: str, *, must_exist: bool = False) -> Path:

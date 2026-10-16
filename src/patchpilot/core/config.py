@@ -46,12 +46,14 @@ class Settings(BaseSettings):
 
     # 模型
     llm_provider: LLMProvider = "stub"
-    llm_base_url: str = "https://api.deepseek.com/v1"
-    # SecretStr：repr / str / model_dump / 日志回显都只显示掩码，
-    # 取值必须显式调用 get_secret_value()（唯一调用点是 llm.build_llm）
+    # 与 `.env.example` 保持一致（官方 OpenAI 兼容端点是裸域名，无需 `/v1` 后缀）
+    llm_base_url: str = "https://api.deepseek.com"
+    # SecretStr：repr / str / model_dump / 日志回显都只显示掩码。
+    # `get_secret_value()` 的调用点有两处，都是安全的：`llm.build_llm`（真正建客户端）
+    # 与 `safe_summary()`（只判断"是否已配置"，不输出明文）。
     llm_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
-    llm_model: str = "deepseek-chat"
-    llm_small_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-flash"
+    llm_small_model: str = "deepseek-flash"
     llm_timeout_s: float = 90.0
 
     # 价格覆盖：形如 {"deepseek-v3": [0.3, 1.2]}，新模型上线时无需改代码

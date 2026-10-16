@@ -49,6 +49,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -59,6 +60,8 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from patchpilot.sandbox.policy import is_link_like
 
 # pass/fail/skip 是阻塞语义；diff/info 是**提示语义**——它们不参与 ok 判定，
 # 只用于表达"两集合有差异""已退化为目录遍历"这类需要人看一眼但不是缺陷的处境。
@@ -410,7 +413,12 @@ def _walk_files(root: Path) -> list[Path]:
         except OSError:
             continue
         for entry in entries:
-            if entry.is_symlink():
+            # **用 `is_link_like` 而不是 `is_symlink()`**（第二十五轮）：Windows junction 的
+            # `is_symlink()` 是 False，会被递归进入，于是枚举会把**仓库之外**的字节纳入
+            # 摘要 / 语法 / 密钥扫描；自引用 junction 还会造成指数放大（实测 8.5s、40 条
+            # `self/self/...` 重复项）。`is_link_like` 一个判据同时覆盖 symlink 与 junction，
+            # 与 `workspace._scan`、`tools/search_server._iter_files` 同口径。
+            if is_link_like(entry):
                 continue
             if entry.is_dir():
                 dir_key = _key(entry.name)
@@ -739,6 +747,12 @@ def _is_writable_dir(path: Path) -> bool:
     try:
         # 先判存在性再写：`mkdir(parents=True)` 会在 basetemp 被删时把它**重建**，
         # 从而把"目录不存在"这一失败态掩盖成"可写"（第十轮复审指出的细节）。
+        #
+        # **登记：这是冗余纵深防御，不被任何用例钉住**（§8.5 第 5 条）。
+        # 变异自证结果（第十七轮 M22）：删掉本行后全套仍全绿——因为路径是普通文件时，
+        # `probe.write_text` 会以 `NotADirectoryError`（OSError 子类）收场，
+        # 下面 `except OSError` 一样返回 False，行为等价。
+        # 保留它是因为它让"不存在/不是目录"与"写失败"两条路径各自有独立出口。
         if not path.is_dir():
             return False
         probe.write_text("ok", encoding="utf-8")
@@ -785,6 +799,44 @@ def _git_climb_env(root: Path) -> dict[str, str]:
     """
     ceiling = Path(root).resolve()
     return {"GIT_CEILING_DIRECTORIES": f"{ceiling}{os.pathsep}{str(ceiling).swapcase()}"}
+
+
+# 本工具自己的 basetemp 运行目录命名：`run-<pid>-<hex6>`。
+# 收窄成精确模式，避免删掉同一 `--basetemp` 下恰好也叫 `run-*` 的**他人**目录。
+_BASETEMP_RUN_RE = re.compile(r"run-\d+-[0-9a-f]{6}")
+
+
+def _prune_stale_basetemps(base_parent: Path, *, current: Path, max_age_s: float = 3600.0) -> None:
+    """回收 basetemp 父目录下**陈旧**的运行目录（每次门禁都会建一个新的）。
+
+    只删 `run-*` 且**非本次**、且超过 `max_age_s` 未修改的目录：
+    - 不删本次 `current`；
+    - 用修改时间做旧新判据，避免误删**并发运行**中他人的临时目录
+      （并发正是当初引入"每次运行独占"的原因，不能又把它的隔离破坏掉）；
+    - 只删**本工具自己命名**的目录（`run-<pid>-<hex>`），不碰同一 `--basetemp`
+      下恰好也叫 `run-*` 的他人目录（第十四轮非阻塞项）。
+
+    失败一律忽略：清理是**尽力而为**，绝不能因为它让门禁失败。
+    """
+    try:
+        entries = list(base_parent.iterdir())
+    except OSError:
+        return
+    cutoff = time.time() - max_age_s
+    for entry in entries:
+        # `not entry.is_dir()` 是**冗余纵深防御、不被任何用例钉住**（§8.5 第 5 条）。
+        # 变异自证（第十八轮 M18b）：删掉它后全套仍绿——因为陈旧**普通文件**走到
+        # `shutil.rmtree` 会抛 `NotADirectoryError`（`OSError` 子类），被下面的
+        # `except OSError` 吞掉，文件仍在。与 `_is_writable_dir` 的 `path.is_dir()` 同构。
+        # 保留是为了让"命名像运行目录的文件"在进入删除动作前就被跳过。
+        if entry == current or not entry.is_dir() or not _BASETEMP_RUN_RE.fullmatch(entry.name):
+            continue
+        try:
+            if entry.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _pytest_env(root: Path) -> dict[str, str]:
@@ -911,6 +963,10 @@ def _check_pytest(
     base_parent = Path(basetemp) if basetemp else root / ".patchpilot" / "pytest-tmp"
     target = base_parent / f"run-{os.getpid()}-{uuid.uuid4().hex[:6]}"
     target.mkdir(parents=True, exist_ok=True)
+    # 顺手回收本目录下**陈旧**的运行目录：每次门禁都不清理会在长期使用中累积成百上千个
+    # （第十三轮非阻塞项实测 100+）。只删非本次、且超过 1 小时没动过的目录，
+    # 避免误删并发运行的他人临时目录。
+    _prune_stale_basetemps(base_parent, current=target)
 
     # 先收集、后执行：收集范围是"这次要不要信 pass"的前提，必须先拿到
     _expected, collected, missing, collect_errors = collect_pytest_scope(

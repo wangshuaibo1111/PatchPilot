@@ -1,6 +1,6 @@
 """执行层：Docker 沙箱、资源限额、安全策略。
 
-设计要点（见 `.tmp/p1_sandbox_design.md` 与 `docs/adr/`）：
+设计要点（详见 `.tmp/p1_sandbox_design.md`；该文档待 P1 收尾后并入 `docs/adr/`）：
   - 把「安全参数怎么拼」（纯函数、可穷举测试）与「容器怎么起」（薄驱动）彻底分开，
     使**安全性的核心部分不依赖 Docker 就能验证**；
   - 每任务一个容器：`--network none`、非 root、只读 rootfs + tmpfs 工作区、
@@ -27,7 +27,17 @@ from patchpilot.sandbox.junit import (
     parse_junit_text,
     parse_junit_xml,
 )
+from patchpilot.sandbox.manager import (
+    JUNIT_REL_PATH,
+    SandboxResult,
+    SandboxRunError,
+    docker_available,
+    image_available,
+    run_in_sandbox,
+    run_pytest_in_sandbox,
+)
 from patchpilot.sandbox.policy import (
+    DEFAULT_IMAGE,
     SandboxPolicy,
     SandboxPolicyError,
     assert_required_invariants,
@@ -44,10 +54,14 @@ from patchpilot.sandbox.workspace import (
 )
 
 __all__ = [
+    "DEFAULT_IMAGE",
+    "JUNIT_REL_PATH",
     "JUnitParseError",
     "JUnitReport",
     "SandboxPolicy",
     "SandboxPolicyError",
+    "SandboxResult",
+    "SandboxRunError",
     "TestCaseOutcome",
     "WorkspaceCopyError",
     "WorkspaceCopyResult",
@@ -55,9 +69,13 @@ __all__ = [
     "assert_safe",
     "build_run_args",
     "copy_workspace",
+    "docker_available",
     "find_escaping_links",
+    "image_available",
     "is_link_like",
     "parse_junit_text",
     "parse_junit_xml",
     "resolve_within",
+    "run_in_sandbox",
+    "run_pytest_in_sandbox",
 ]

@@ -4,7 +4,7 @@
 
 **目标岗位**：国内大厂 Agent 开发 / 算法岗。
 **详细计划、阶段状态与变更日志**：见 **[PLAN.md](PLAN.md)**（唯一事实来源）。
-**当前状态**：P0 工程骨架**已完成并发布**（`0ad9ea8` 已推送 `origin/main`；确定性门禁 **10 项全绿**、摘要可复算、Postgres/sqlite checkpoint 真机验证）；七轮对抗性复审累计裁定的阻塞（10 → 3 → 1 → 4 → 1 → 2 → 3 项）**已全部修复并补齐回归用例**，第八轮复审 APPROVE。P1 沙箱安全核心已在工作副本通过真机验证（20/20），正在迁入 `src/`。**尚无论文级效果数据**（见第 6 节）。
+**当前状态**：P0 工程骨架**已完成并发布**（确定性门禁 **10 项全绿**、摘要可复算、Postgres/sqlite checkpoint 真机验证）；七轮对抗性复审累计裁定的阻塞（10 → 3 → 1 → 4 → 1 → 2 → 3 项）**已全部修复并补齐回归用例**，第八轮 APPROVE 后发布（commit `0ad9ea8`）。**P1（验收项 2）已完成**：沙箱驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server**（fs/git/test/search，已在 stdio 协议层验证）+ 自建执行镜像；**真机 Docker 端到端验证 15/15 通过**（`.tmp/verify_sandbox_container.out`）。**尚无论文级效果数据**（见第 6 节）。
 
 ---
 
@@ -64,7 +64,7 @@
 | F5 | 修复后 `pass_to_pass` 无一回归 | 沙箱内测试结果 | P3 |
 | F6 | 修不好时**如实报告**，而不是交一个假装修好的补丁 | 人工抽查 + trace 一致性 | P3 |
 | F7 | 每次运行可**完整归因**：哪一步用了什么、花了多少 | trace 覆盖全部 LLM 调用与工具调用 | P3 |
-| F8 | 沙箱**真的隔离**：网络不可达、根文件系统只读、非 root、资源超限被杀、超时被杀 | 4 类安全用例（见 2.2） | **已验证 20/20**（工作副本原型） |
+| F8 | 沙箱**真的隔离**：网络不可达、根文件系统只读、非 root、资源超限被杀、超时被杀 | 4 类安全用例（见 2.2） | **已验证**：真机 Docker 端到端 **15/15**（uid=1000、宿主目录不可见、rootfs 只读、网络不可达、**内存 OOM rc=137**、**pids 超限 fork 被拒**、超时截断且容器无残留、30 类非法字段构造期被拒）；日志 `.tmp/verify_sandbox_container.out` |
 
 ### 2.2 安全验收（沙箱必须挡住的 4 类用例）
 
@@ -173,7 +173,7 @@ PatchPilot\
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **P0** | 工程骨架：CLI、配置、预算熔断、LangGraph 最小图、checkpointer、docker compose、CI、双门禁协议 | ✅ **已完成并发布**（`0ad9ea8` 已推送 `origin/main`） |
-| **P1** | 沙箱与工具：Docker 隔离 + 4 个 MCP Server（fs/git/test/search）+ 4 类安全用例 | 🔧 进行中：纯逻辑层（策略 / 工作区复制 / JUnit 解析）已迁入 `src/`；**参数面已从"裸 argv 片段"改为类型化字段**（四轮对抗性审查的结论）；**真机 Docker 端到端验证 11/11 通过**（`.tmp/verify_sandbox_container.out`：uid=1000、宿主目录不可见、rootfs 只读、网络不可达、超时清理、22 类字段级非法值全部构造期被拒）；待做驱动层与 4 个 MCP server |
+| **P1** | 沙箱与工具：Docker 隔离 + 4 个 MCP Server（fs/git/test/search）+ 4 类安全用例 | ✅ **已完成**（验收项 2）：沙箱驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server 已在 stdio 协议层验证**；自建执行镜像 `docker/sandbox/Dockerfile`；**真机 Docker 端到端 15/15**（uid=1000、宿主不可见、rootfs 只读、网络不可达、内存 OOM rc=137、pids 超限 fork 被拒、超时截断且无残留）；单测 452 |
 | **P2** | 检索与定位：符号索引、BM25 + 向量 + 调用图召回、重排 | 未开始 |
 | **P3** | 修复闭环：补丁生成、`fail_to_pass` / `pass_to_pass` 判定、有限轮次自省 | 未开始 |
 | **P4** | 评测闭环：SWE-bench 子集 runner、消融矩阵、成本/耗时曲线 | 未开始 |

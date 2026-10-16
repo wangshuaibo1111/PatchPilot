@@ -29,6 +29,8 @@ sqlite = ["langgraph-checkpoint-sqlite"]
 postgres = ["langgraph-checkpoint-postgres", "psycopg[binary]>=3.2"]
 # P2 起需要：向量检索
 vector = ["qdrant-client>=1.12"]
+# P1 起需要：把工具层挂到 MCP 协议上（工具函数本身只用标准库，故这是可选依赖）
+mcp = ["mcp>=1.2"]
 # dev 里带上 sqlite checkpoint：否则该用例在 CI 与本机都必然跳过（二轮审查 NON_BLOCKING-6）
 dev = [
   "pytest>=8.2",

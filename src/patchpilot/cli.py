@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
@@ -186,9 +187,24 @@ def dev_down(
 @app.command()
 def smoke(
     issue: str = typer.Option("", help="覆盖默认的模拟 issue 文本"),
+    real_llm: bool = typer.Option(
+        False,
+        "--real-llm",
+        help="使用 .env 配置的真实模型（需要装 patchpilot[llm]，会联网并计费）",
+    ),
 ) -> None:
-    """跑通最小 LangGraph 图并输出 trace（无需网络 / Docker / API Key）。"""
+    """跑通最小 LangGraph 图并输出 trace（**默认无需网络 / Docker / API Key**）。
+
+    第二十一轮非阻塞项：`.env` 里把 `PP_LLM_PROVIDER` 切成 `deepseek` 之后，
+    本命令会因缺少 `openai` 依赖直接抛 `RuntimeError`、退出码 1——而 README/PLAN 把
+    `pp smoke` 当作 P0 的零依赖门禁。这是**配置影响门禁**的隐患：换 `.env` 就能让门禁变红。
+
+    修法：本命令**默认强制 stub provider**（骨架自测语义），要连真实模型必须显式加
+    `--real-llm`。这样 `pp smoke` 的语义不再随 `.env` 漂移。
+    """
     settings = get_settings()
+    if not real_llm and settings.llm_provider != "stub":
+        settings = settings.model_copy(update={"llm_provider": "stub"})
     configure_logging(settings)
 
     final, trace_path = run_minimal_demo(settings=settings, issue=issue or None)
@@ -329,6 +345,43 @@ def info() -> None:
     settings: Settings = get_settings()
     for key, value in settings.safe_summary().items():
         console.print(f"{key} = {value}")
+
+
+@app.command("mcp")
+def mcp_server(
+    name: str = typer.Argument(..., help="server 名：fs | git | test | search"),
+    root: Path = typer.Option(Path("."), help="只允许该目录之内的访问（默认当前目录）"),
+    copy_root: Path | None = typer.Option(
+        None, help="test server 复制副本的父目录（默认取沙箱根/临时目录）"
+    ),
+) -> None:
+    """以 **stdio** 方式启动一个 MCP server（供 Agent 客户端接入）。
+
+    安全语义：`root` 是工具层能看到的**全部世界**——根之外的一切对它不存在。
+    `test` server 会额外起 Docker 沙箱（需要沙箱镜像，见 `docker/sandbox/Dockerfile`）。
+    """
+    from patchpilot.sandbox.policy import SandboxPolicy
+    from patchpilot.tools import servers
+
+    resolved_root = root.resolve()
+    if not resolved_root.is_dir():
+        raise typer.BadParameter(f"root 必须是已存在的目录: {resolved_root}")
+    if name == "test":
+        # 副本根默认落到**系统临时目录**下的专用沙箱根，而不是"仓库父目录"：
+        # 后者在进程被强杀时会把 `copy-*` 残留在用户的工程目录里（第二十四轮非阻塞项）。
+        sandbox_root = (copy_root or Path(tempfile.gettempdir()) / "patchpilot-sandbox").resolve()
+        sandbox_root.mkdir(parents=True, exist_ok=True)
+        policy = SandboxPolicy(sandbox_root=sandbox_root)
+        server = servers.build_test_server(policy, resolved_root, copy_root=sandbox_root)
+    elif name == "fs":
+        server = servers.build_fs_server(resolved_root)
+    elif name == "git":
+        server = servers.build_git_server(resolved_root)
+    elif name == "search":
+        server = servers.build_search_server(resolved_root)
+    else:
+        raise typer.BadParameter(f"未知 server: {name}；可选: {list(servers.SERVER_NAMES)}")
+    server.run()  # stdio 传输
 
 
 if __name__ == "__main__":  # pragma: no cover
