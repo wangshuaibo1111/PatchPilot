@@ -1,0 +1,18 @@
+# 统一行尾为 LF —— 任何平台检出都是 LF。
+#
+# 起因：TREE_DIGEST 按工作区字节计算，而 Windows 上 core.autocrlf 会把检出转成 CRLF，
+# 于是"第三方克隆后复算同一摘要"在 Windows 上不成立（本机暂存时 git 逐文件告警可见）。
+# 仓库内统一 LF 后，摘要与平台无关。
+* text=auto eol=lf
+
+# 二进制不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.whl binary
+*.sqlite binary
+*.sqlite3 binary

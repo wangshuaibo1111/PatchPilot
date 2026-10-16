@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# PatchPilot 运行时产物
+.patchpilot/
+.tmp/
+*.sqlite
+*.sqlite3
+
+# 环境变量（含密钥，禁止提交）
+.env
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+# conda 环境
+.conda/
+
+# 依赖/构建产物（必须与 preflight 的 SKIP_DIRS / SKIP_*_SUFFIXES 双向一致，
+# 否则 git 不忽略它们，这些字节既不在摘要也不在密钥扫描范围内 —— 门禁自检 skip_rules 会把关）
+node_modules/
+.eggs/
+.tox/
+.nox/
+htmlcov/
+*.dist-info/
+*.egg-link
+

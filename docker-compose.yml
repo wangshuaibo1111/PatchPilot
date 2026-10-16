@@ -1,0 +1,53 @@
+# PatchPilot 依赖服务
+# 启动：pp dev-up    停止：pp dev-down
+#
+# 说明：Langfuse 观测栈（clickhouse + minio + langfuse-web）体量较大，
+# 计划在 P5 阶段以独立 profile 加入，避免 P0/P1 阶段拉取大量镜像。
+# 本阶段可观测性由 src/patchpilot/observability 输出 JSONL trace 承担。
+name: patchpilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: patchpilot-postgres
+    environment:
+      POSTGRES_USER: patchpilot
+      POSTGRES_PASSWORD: patchpilot
+      POSTGRES_DB: patchpilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patchpilot -d patchpilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: patchpilot-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: patchpilot-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+volumes:
+  pgdata:
+  redisdata:
+  qdrantdata:

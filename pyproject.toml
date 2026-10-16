@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchpilot"
+version = "0.0.1"
+description = "PatchPilot - 代码修复 Agent + 评测闭环"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "structlog>=24.1",
+  "typer>=0.12",
+  "rich>=13.7",
+  "langgraph>=0.2.60",
+]
+
+[project.optional-dependencies]
+# P3 起需要：真实模型调用（openai 自带 httpx，无需显式声明）
+llm = ["openai>=1.40"]
+# P6 起需要：API 服务
+server = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
+# checkpoint 后端与 checkpointer.py 的实现一一对应，避免"按声明的 extras 装不上"
+sqlite = ["langgraph-checkpoint-sqlite"]
+postgres = ["langgraph-checkpoint-postgres", "psycopg[binary]>=3.2"]
+# P2 起需要：向量检索
+vector = ["qdrant-client>=1.12"]
+# dev 里带上 sqlite checkpoint：否则该用例在 CI 与本机都必然跳过（二轮审查 NON_BLOCKING-6）
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "langgraph-checkpoint-sqlite",
+]
+
+[project.scripts]
+pp = "patchpilot.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# 排除运行时/暂存产物：ruff 默认排除表不含这些
+extend-exclude = [".tmp", ".patchpilot", ".conda"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer 的 Option/Argument 按设计写在函数默认值位置
+"src/patchpilot/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
