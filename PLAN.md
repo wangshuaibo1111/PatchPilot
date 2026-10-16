@@ -232,6 +232,35 @@ D:\Code\PatchPilot\
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
 
+### [2026-10-16] P0 发布完成：commit `0ad9ea8` 已推送 `origin/main`
+
+- **变更**：取得 `code-reviewer` 第八轮 APPROVE 后，由 `git-publisher` 流程提交并推送。
+  本条目是**新的**日志条目（按 §8.3 自指约束，commit hash 记入新条目，不回填已批准条目）。
+  - `VERDICT: APPROVE`（`SCOPE: WORKTREE`，`TREE_DIGEST = ab1ce173380d5bb2ae8fc574fad4c4d1`），
+    审查者独立复算一致，并确认审查全程只读、审查前后摘要相同；其对抗集在新代码上 **39/39 通过**
+    （上一轮 38/39，唯一失败项就是它提出的 BLOCKING，现已修复）。
+  - 提交前复算 `pp check --json` 的 `tree_digest` 与 APPROVE 引用值**逐字符一致**，
+    且 `git diff --stat` 为空、`git status --porcelain` 全部为 `A `（无 `AM`/`MM`）。
+- **文件**：36 个文件（`5975 insertions(+)`），首次提交为 root-commit。
+- **验证**：
+  - `git log --oneline -1` → `0ad9ea8 feat(p0): 工程骨架与确定性门禁（含第七轮 3 项阻塞修复）`
+  - `git rev-parse HEAD` → `0ad9ea818d01bdb11b27512fc15e213657bd0f6a`
+  - `git ls-tree -r --name-only HEAD` → 36 个文件
+  - `git push -u origin main` → exit=0，`* [new branch] main -> main`，
+    分支已 `set up to track 'origin/main'`
+  - `git ls-remote origin` → `0ad9ea818d01bdb11b27512fc15e213657bd0f6a  HEAD` /
+    同值 `refs/heads/main`（远端唯一 ref，与本地一致）
+  - 推送前基线：`pp check` → `preflight=OK (pass=10 fail=0 skip=0 diff=0 info=0)`、`files=36`、
+    `secrets=0`、pytest 范围证据 `7/7`；`pytest -q` → 92 passed + 1 skipped；
+    `ruff check src tests` → All checks passed
+- **审查**：第八轮 `code-reviewer` **APPROVE**（摘要 `ab1ce173…`）。
+  同轮曾出现两个结论（旧会话 APPROVE `c41ec41d…`、新会话 REJECT 同摘要）；
+  按"取更严格者"先修 REJECT 的 BLOCKING（子目录 root 静默丢失索引绑定）与 4 项非阻塞，
+  重新取摘要后由 `2af545b4` 复审并 APPROVE。
+  **其 4 条新非阻塞项登记入下一条日志**（本条目不复述，避免继续改动已发布条目的字节——
+  注意：本条目写在提交**之后**，因此它不在任何已批准的摘要内）。
+- **提交**：`0ad9ea818d01bdb11b27512fc15e213657bd0f6a`（`main`，已推送 `origin/main`）
+
 ### [2026-10-15] 第八轮复审收口：子目录 root 的索引绑定 + 6 项非阻塞
 
 - **背景**：第八轮复审出现了**两个结论**——原会话 `99415545` 给 `VERDICT: APPROVE`
