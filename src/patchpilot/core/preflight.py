@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import importlib.util
 import os
@@ -62,6 +63,10 @@ from pydantic import BaseModel, Field
 # pass/fail/skip 是阻塞语义；diff/info 是**提示语义**——它们不参与 ok 判定，
 # 只用于表达"两集合有差异""已退化为目录遍历"这类需要人看一眼但不是缺陷的处境。
 CheckStatus = Literal["pass", "fail", "skip", "diff", "info"]
+
+# pytest 范围证据：期望执行的测试文件 / 实际收集到的 / 缺失的 / 收集期报错行。
+# 定义成一个别名，避免各处手写三元组或四元组导致形状不一致（八轮非阻塞 1 的成因）。
+PytestScope = tuple[list[str], list[str], list[str], list[str]]
 
 SKIP_DIRS = {
     ".git",
@@ -213,6 +218,9 @@ class PreflightReport(BaseModel):
     pytest_expected_files: list[str] = Field(default_factory=list)
     pytest_collected_files: list[str] = Field(default_factory=list)
     pytest_missing_files: list[str] = Field(default_factory=list)
+    # 收集期报错行（导入失败 / conftest 报错 / 模块级 skip）——与"被 collect_ignore 抑制"
+    # 是两种不同处境，必须都能在报告里看到，而不是只出现在 detail 文案里（八轮非阻塞 1）
+    pytest_collect_errors: list[str] = Field(default_factory=list)
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=2)
@@ -717,6 +725,31 @@ def _check_ruff(root: Path, timeout_s: float) -> CheckResult:
     )
 
 
+def _is_writable_dir(path: Path) -> bool:
+    """写探针：该目录**存在且**能真的创建/删除一个临时文件。
+
+    用作"环境问题（临时目录不可写）"的**唯一判据**——不猜 pytest 的输出文本：
+    既不会被断言消息里引用的 `PermissionError` 误触发，也不会因为 traceback 带 `E ` 前缀
+    而漏判真正的权限问题（八轮非阻塞 2）。
+
+    刻意**不**在探针里 `mkdir(parents=True)`：那会把"目录不存在"这种失败态
+    自己修好再报成功（第十轮复审指出），而 basetemp 目录本身由调用方创建。
+    """
+    probe = path / f".pp-write-probe-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    try:
+        # 先判存在性再写：`mkdir(parents=True)` 会在 basetemp 被删时把它**重建**，
+        # 从而把"目录不存在"这一失败态掩盖成"可写"（第十轮复审指出的细节）。
+        if not path.is_dir():
+            return False
+        probe.write_text("ok", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            probe.unlink()
+
+
 def _pytest_targets(root: Path, candidates: list[Path]) -> list[str]:
     """摘要集合中的测试文件（相对 root 的 posix 路径，已排序）。
 
@@ -783,7 +816,7 @@ def _parse_pytest_collection(out: str) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     for raw in out.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("<", "=", "!", "no tests ran", "=")):
+        if not line or line.startswith(("<", "=", "!", "no tests ran")):
             continue
         if line.startswith(("ERROR ", "E   ")) and ".py" in line:
             errors.append(line[:160])
@@ -839,7 +872,7 @@ def _check_pytest(
     basetemp: Path | None,
     timeout_s: float,
     candidates: list[Path],
-) -> tuple[CheckResult, tuple[list[str], list[str], list[str]]]:
+) -> tuple[CheckResult, PytestScope]:
     """跑 pytest，并把「执行范围」钉在摘要集合上。
 
     两件事缺一不可：
@@ -848,9 +881,10 @@ def _check_pytest(
       2. **`--collect-only` 取实际收集清单并要求全覆盖** → 若仍有文件没被收集
          （第二道防线），直接 fail 并把缺失清单写进报告。
 
-    返回值第二项是范围证据，最终进入 PreflightReport 供审查者核对。
+    返回值第二项是**范围证据四元组**（期望 / 实际收集 / 缺失 / 收集期报错），
+    由 `PreflightReport` 与 `pytest` 检查项共用（八轮非阻塞 1：不得截断）。
     """
-    empty_scope: tuple[list[str], list[str], list[str]] = ([], [], [])
+    empty_scope: PytestScope = ([], [], [], [])
     started = time.perf_counter()
     if importlib.util.find_spec("pytest") is None:
         return CheckResult(name="pytest", status="skip", detail="pytest 未安装"), empty_scope
@@ -878,17 +912,13 @@ def _check_pytest(
     target = base_parent / f"run-{os.getpid()}-{uuid.uuid4().hex[:6]}"
     target.mkdir(parents=True, exist_ok=True)
 
-    # 把"不得越过仓库根认领外层仓库"写进本进程环境：pytest 子进程与其调用链
-    # （含仓库自己那些"在临时目录里 git init"的用例）都会继承它。
-    # 不这样做时，同一棵树上的用例结论会随"谁在调用 pytest"而漂移
-    # （门禁调用 vs 开发者手跑 → 同一用例一红一绿），属实测到的假失败来源。
-    os.environ.update(_git_climb_env(root))
-
     # 先收集、后执行：收集范围是"这次要不要信 pass"的前提，必须先拿到
     _expected, collected, missing, collect_errors = collect_pytest_scope(
         root, candidates, target, timeout_s
     )
-    scope = (_expected, collected, missing)
+    # 四元组原样带出去：`scope` 同时供 `pytest` 检查项与 `PreflightReport` 使用，
+    # 不再截断成三元组（否则"收集期报错"证据永远到不了报告——八轮非阻塞 1）。
+    scope = (_expected, collected, missing, collect_errors)
 
     code, out = _run(
         [
@@ -908,15 +938,14 @@ def _check_pytest(
     )
 
     duration = round(time.perf_counter() - started, 3)
-    lowered = out.lower()
-    # 只匹配**异常类型串**，不要放开成人类可读的 "access is denied"：
-    # 一个真实断言失败若在输出里打印了这句话（例如断言消息里引用了它），
-    # 就会被改写成"环境问题"而误导诊断（八轮非阻塞 3）。
-    environment_issue = (
-        "permissionerror" in lowered
-        or "winerror 5" in lowered
-        or "internalerror" in lowered
-    )
+    # 环境判据：**直接对 basetemp 做写探针**，不再猜输出文本。
+    # 文本启发式两个方向都错过（八轮非阻塞 2 的后续实测）：
+    #   (a) 真·PermissionError 的 traceback 行是 `E       PermissionError: …`，
+    #       按"以异常类型开头"匹配不到，于是"临时目录不可写"这个分类几乎不可达；
+    #   (b) pytest 的 Captured stdout 段是不带前缀的原文，
+    #       `print("PermissionError: [WinError 5] …")` + `assert False` 会被误判成环境问题。
+    # 写探针直接回答"这个目录能不能写"，与输出内容无关。
+    environment_issue = not _is_writable_dir(target)
     if environment_issue:
         return (
             CheckResult(
@@ -1432,7 +1461,7 @@ def run_preflight(
         _guarded("syntax", lambda: _check_syntax(root, targets))
     ]
 
-    pytest_scope: tuple[list[str], list[str], list[str]] = ([], [], [])
+    pytest_scope: PytestScope = ([], [], [], [])
     if run_tests:
         checks.append(_guarded("ruff", lambda: _check_ruff(root, timeout_s)))
         # pytest 的执行范围必须钉在摘要集合上；异常也不允许逃逸（兜底为空范围）
@@ -1471,7 +1500,7 @@ def run_preflight(
     )
     checks.append(_guarded("env_not_tracked", lambda: _check_env_not_tracked(root)))
 
-    pytest_expected, pytest_collected, pytest_missing = pytest_scope
+    pytest_expected, pytest_collected, pytest_missing, pytest_errors = pytest_scope
     return PreflightReport(
         ok=all(c.status != "fail" for c in checks),
         root=str(root),
@@ -1486,4 +1515,5 @@ def run_preflight(
         pytest_expected_files=pytest_expected,
         pytest_collected_files=pytest_collected,
         pytest_missing_files=pytest_missing,
+        pytest_collect_errors=pytest_errors,
     )

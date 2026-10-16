@@ -306,6 +306,9 @@ def check(
             )
             for missing in report.pytest_missing_files:
                 console.print(f"  [red]· 未被执行: {missing}[/red]")
+            # 采集期报错也要在人类可读报告里可见（此前只有 --json 才有）
+            for error in report.pytest_collect_errors[:5]:
+                console.print(f"  [red]· 收集期报错: {error}[/red]")
 
         console.print(f"\n{report.summary_line()}")
         console.print(

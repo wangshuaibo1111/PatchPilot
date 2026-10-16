@@ -111,8 +111,8 @@ D:\Code\PatchPilot\
 
 | 阶段 | 内容 | 完成标志 | 状态 |
 |---|---|---|---|
-| **P0** | 工程骨架：工程配置、compose、状态机、checkpointer、CLI、CI、测试 | `pp smoke` 通过 + 全部单测通过 + `code-reviewer` 出具 APPROVE | 🔧 功能完成；第七轮 3 项阻塞已修并补回归用例，**待第八轮复审**（通过后才提交/推送） |
-| **P1** | 沙箱与工具：Docker 隔离、4 个 MCP Server、安全测试 | 沙箱跑 pytest 结构化返回；4 类安全用例全绿 | ⏳ 阻塞已解除（实测 Docker 守护进程可用，ServerVersion 29.5.2）；纯逻辑原型在 `.tmp/p1_staging`，待迁入 `src/` |
+| **P0** | 工程骨架：工程配置、compose、状态机、checkpointer、CLI、CI、测试 | `pp smoke` 通过 + 全部单测通过 + `code-reviewer` 出具 APPROVE | ✅ **已完成并发布**：`0ad9ea8` 已推送 `origin/main`（第八轮 APPROVE，摘要 `ab1ce173…`）；4 条非阻塞项见最新日志 |
+| **P1** | 沙箱与工具：Docker 隔离、4 个 MCP Server、安全测试 | 沙箱跑 pytest 结构化返回；4 类安全用例全绿 | 🔧 **进行中**：Docker 守护进程实测可用（29.5.2）；纯逻辑原型待迁入 `src/`（`.tmp/p1_staging`，含 `MIGRATION.md`） |
 | **P2** | 代码索引与检索：tree-sitter 符号表、三路召回、rerank | 定位集 Top-5 命中率有基线与消融表 | 未开始（可立即开工，不依赖 Docker） |
 | **P3** | 修复闭环：8 节点全图、真实模型、预算熔断 | 10 个真实 issue 端到端跑通 ≥3 个 | ⛔ 阻塞：`.env` 未配置 API Key，且 `openai` 依赖未安装 |
 | **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 未开始 |
@@ -231,6 +231,240 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-16] 第十一轮复审：采纳结构性改法——删除裸 `extra_args`，参数面改类型化字段
+
+- **背景与决策依据**：第十轮修完的 3 项阻塞（悬空取值 / 未覆盖的新规则 / `*.git` 命名）
+  经审查者逐条真机复核确已修复，但同一轮又指出：**"允许清单 + 跨 token 状态机"这条路不能收敛**，
+  并给出结构性判断——四轮里每轮都被同一类缺陷的新拼写击穿（粘连 → 布尔捆绑 → 悬空取值 →
+  "flag 紧跟 flag"），其中"取值/位置错位"**原理上不可检**：某个 flag 的取值位置被前一个
+  token 吃掉后，argv 层面再也分不清"用户想要 `--init`"与"用户在给 `-e` 传值"。
+  审查者推荐 **(a) 完全去掉裸 `extra_args`，改显式字段**。我采纳。
+- **变更**：
+  1. **`SandboxPolicy.extra_args` 字段整体删除**，改为类型化字段：
+     `init: bool` / `interactive: bool` / `tty: bool` / `labels: tuple[tuple[str, str], ...]` /
+     `hostname: str | None` / `stop_timeout_s: int | None`。
+     随之**消失**的代码与概念：`SAFE_EXTRA_FLAGS`、`_EXTRA_FLAGS_WITH_VALUE`（含重复定义那份）、
+     `_BOOLEAN_FLAGS/_BOOLEAN_VALUES`、`_space_terminated_prefix`、`_validate_extra_arg(s)`、
+     `_validate_flag_value`，以及"拒绝拼写表"这个概念本身——**状态机不复存在，也就没有下一代拼写**。
+  2. 新增字段全部配**构造期校验**：`_validate_hostname`（非空、无空白/逗号）、
+     `labels`/`env` 的名与值不得含空白、`stop_timeout_s` 非负。
+  3. `build_run_args` 改为按字段拼装；布尔项只写 flag 本身（不产生 `--init=true`）。
+     生成期的镜像位置断言**保留为纵深防御**，并在测试里**如实登记为"构造路径不可达"**
+     ——不再声称它是"已被覆盖的防线"（第十一轮的诚实要求）。
+  4. `run_as` 限定 **ASCII 数字**：Python `int()` 会接受全角/阿拉伯-印度数字，
+     docker 却认不出（`unable to find user`），与 docstring 的"数值 uid/gid"口径不符。
+  5. **`.git-credentials` 与嵌套 git 目录补全**（第十一轮实测的泄漏路径）：
+     `vendor/.git-credentials`、`nested/.git/.git-credentials`、`deps/lib.git/config`、
+     `vendor/.git/modules/sub/hooks` 此前都能进副本。现在判定统一为
+     "任意祖先段是 git 仓库目录（`.git` 或以 `.git` 结尾）"，配置类按 basename
+     （新增 `git-credentials`）、`modules`/`worktrees` 目录按"git 目录之下"判定
+     （不再只匹配顶层 `.git/modules`）。
+  6. **`.tmp/verify_sandbox_container.py` 重写**：第十一轮用 AST 抓到该脚本
+     `run`/`main` **各定义两次**、后者覆盖前者（直播的是陈旧那份：只有 4 项注入、
+     会 `docker pull`、超时后不清理）——即"日志里的证据不可复现"。
+     现在：单一定义（AST 自检无重复）、不 `docker pull`（`image inspect` 预检 + `--pull=never`）、
+     注入面改为**字段级非法值**（22 项）、Docker 缺失 skip 而隔离失效 fail。
+  7. 补上变异实验暴露的覆盖缺口：重复 `--user`（用两次**合法**值以便真正触发 `len>1` 分支）、
+     `workdir` 逗号检查（`/workspace/,readonly` 这类只有逗号规则能拦）、
+     复制中途失败的回滚分支、`parse_junit_text` 的内存入口体积闸。
+- **文件**：`src/patchpilot/sandbox/policy.py`、`src/patchpilot/sandbox/workspace.py`、
+  `tests/test_sandbox_policy.py`、`tests/test_workspace_copy.py`、`tests/test_junit.py`、
+  `README.md`、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **193 passed + 3 skipped**，0 failed / 0 error
+  - 真机 Docker 29.5.2 端到端 → **11/11**（uid=1000、宿主目录 NOT-SEEN、rootfs Errno 30、
+    /tmp 可写、网络 Errno 101、22 类字段级非法值全部构造期拒绝、超时 8.2s 截断且无残留），
+    日志落盘 `.tmp/verify_sandbox_container.out`；AST 自检确认脚本无重复定义
+  - `.git` 凭据剥离复算：`vendor/.git-credentials`、`nested/.git/.git-credentials`、
+    `deps/lib.git/config`、`vendor/.git/modules` 全部剥离并记录，**副本内不再有任何 `ghp_`**，
+    业务文件（`app/config`、`vendor/lib.py`）保留
+  - `pp check --json` ×2 → 见本批冻结自证（摘要由审查者复算）
+- **审查**：**待第十二轮复审**（结构变更 + 7 项同批修复）
+- **提交**：待本轮推送
+
+### [2026-10-16] 第十轮复审 REJECT（3 项 BLOCKING）修复：悬空取值 / 未覆盖的新规则 / `*.git` 命名
+
+- **背景**：第九轮第二轮的 4 项阻塞（布尔短选项捆绑、嵌套 `.git`、两处零覆盖）已修完并由审查者
+  逐条真机复核通过（`-iu0:0`/`-iv…` 在原始 docker 上确实产出 `RAWUID 0` / 宿主挂载，
+  证明修法必要），但同一轮审查又发现 3 项新问题。本批按更严格者全部处理。
+- **变更**：
+  1. **BLOCKING——`extra_args` 里的"悬空取值"会把镜像名吃掉**。真机判决性观察：
+     `SandboxPolicy(image="python:3.12-slim", extra_args=("-e",))` 配
+     `command=["python:latest", ...]` → `--pull=never` 下 **exit=0 且跑的是 python:latest（3.15.0）**，
+     命令还静默丢掉首元素，而 `assert_safe` 与 `assert_required_invariants` **全部通过**。
+     即"镜像锁定"与"安全语义由 build_run_args 独占"两条承诺可被**单个 extra_args 元素**击穿。
+     **修法**：`_validate_extra_args` 循环结束后校验 `pending_value_for`（悬空即拒绝，
+     含中间被另一个 flag 打断的情形）；`build_run_args` 末尾加**结构不变量**——
+     断言 `args[-(len(command)+1)] == policy.image`。`--workdir/-w` 一并移出允许清单
+     （workdir 是策略的一等字段，见 `_validate_workdir`；否则 `--workdir=/` 会绕过子树限制）。
+  2. **BLOCKING——本轮新增的 `workdir` 子树规则与长选项严格性零测试覆盖**。
+     审查者的变异实验：把子树规则改成 `if False:`（M8）、把 `_space_terminated_prefix`
+     末行改成 `return True`（M9），套件**仍然全绿**。**修法**：补
+     `test_workdir_must_stay_inside_allowed_subtrees`（`/`、`/etc`、`/etc/passwd`、
+     `/workspace/../etc`、`/var`）与 `test_workdir_accepts_allowed_subtrees`；
+     补 `test_long_flag_prefix_matching_is_strict`（`--env-file=/etc/passwd`、`--label-file=x`、
+     `--workdirx`、`--initx`、`--init=maybe`、`--tty=yes`）——
+     其中 `--env-file` 若被放宽会让 docker 去读**宿主文件**当容器环境变量。
+  3. **BLOCKING——`*.git` 命名（bare/mirror）的仓库仍被复制**。真机证据：
+     `deps/lib.git/config`（明文 `ghp_` 令牌）与 `deps/lib.git/hooks/pre-commit` 进了副本——
+     与上一轮**同一类缺陷**，只是命名变体（`foo.git` 而非 `foo/.git`）。
+     **修法**：`_is_git_dir_name()` 同时认"== `.git`"与"以 `.git` 结尾"；
+     `_is_git_hooks_dir()` 覆盖 `<gitdir>/hooks`、`foo.git/hooks`、
+     以及**子模块**的 `vendor/.git/modules/sub/hooks`。**刻意不整棵丢弃 `*.git`**
+     （那会误删业务数据），只按 basename 剥配置类文件与 hooks 目录。
+     取舍已写明：段名以 `.git` 结尾即视为仓库目录，**假阳性只代价一个文件 + 一条记录**，
+     而假阴性是把宿主凭据交给不可信沙箱。
+  4. 非阻塞一并处理：`_is_writable_dir` 先判存在性再写探针（原 `mkdir(parents=True)`
+     会把"目录不存在"自己修好再报成功）；**拒绝拼写表收敛为单一来源**
+     （`REJECTION_SPELLINGS` 定义在 `tests/test_sandbox_policy.py`，真机脚本
+     `.tmp/verify_sandbox_container.py` 通过 `sys.path` 导入同一张表——两处清单此前已分叉），
+     现共 **29 种拼写**；`--init=maybe`/`--tty=yes` 这类非法布尔值改在构造期拒绝
+     （原为运行期 `strconv.ParseBool`）；`workdir` 拒绝 `..` 回溯段；
+     README 的 P1 行与 PLAN 编号同步（单测数改为实测的 143）。
+- **文件**：`src/patchpilot/sandbox/policy.py`、`src/patchpilot/sandbox/workspace.py`、
+  `src/patchpilot/core/preflight.py`、`tests/test_sandbox_policy.py`、
+  `tests/test_workspace_copy.py`、`tests/test_preflight.py`、`README.md`、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **238 passed + 3 skipped**，0 failed / 0 error
+    （三个沙箱模块 143 项：policy 113 / workspace_copy 12 / junit 18）
+  - 真机 Docker 29.5.2 端到端 `.tmp/verify_sandbox_container.py` → **10/10**，
+    **29 种注入拼写全部在构造期被拒**；日志落盘 `.tmp/verify_sandbox_container.out`
+  - `pp check --json` ×2 → 见本批冻结自证（摘要由审查者复算）
+- **审查**：**待第十一轮复审**（本批 = 3 项阻塞 + 7 项非阻塞，集中在 `sandbox/` 与 `preflight`）
+- **提交**：待本轮推送
+
+### [2026-10-16] 收尾第八轮复审的 4 条非阻塞项（P0 发布后第一批）
+
+- **背景**：第八轮审查者明确要求"这 4 条记入**下一条**日志，不得回填已批准条目"
+  （回填会使已批准摘要作废）。本条即该条目；`0ad9ea8` 的批准不受本批影响。
+- **变更**：
+  1. **非阻塞 1——收集期报错进不了报告**。`collect_pytest_scope` 已返回四元组，
+     但 `_check_pytest` 把它截断成三元组，`collect_errors` 只活在 detail 文案里，
+     机器消费不到。现在：新增 `PreflightReport.pytest_collect_errors` 字段并接线；
+     引入类型别名 `PytestScope = tuple[list[str], list[str], list[str], list[str]]`，
+     `_check_pytest` / `collect_pytest_scope` / `run_preflight` 的注解与解包统一到它——
+     这个"形状前后不一致"正是我自查时踩过的同一个坑，别名是结构性防复发。
+  2. **非阻塞 2——`environment_issue` 仍在整段输出里做字符串匹配**。
+     现在只认**以异常类型开头的行**（`PermissionError:` / `WinError 5`）与
+     `INTERNALERROR`：断言失败打印的是 `AssertionError`，即使内容里提到这些词也不会命中。
+  3. **非阻塞 3——`os.environ` 进程级副作用**。`_check_pytest` 里的
+     `os.environ.update(_git_climb_env(root))` **已删除**：界标改为只经
+     `extra_env=_pytest_env(root)` 传给 pytest 子进程（收集与执行两处都传），
+     本进程环境不再被改写，行为不再依赖执行顺序。
+  4. **非阻塞 4——`--basetemp` 文案**：核对结论是**无需修改**。
+     `git show 0ad9ea8:src/patchpilot/cli.py` 显示已发布的字节里就是
+     "pytest 临时目录的**父目录**（每次门禁运行会在其下建独占子目录 run-<pid>-<hex>）"；
+     审查者读到旧措辞是时序问题（它读的是我改动前的快照）。
+  5. 新增两条回归用例：
+     `test_report_carries_pytest_collect_errors`（真正的收集期错误——
+     **导入不存在的模块**——必须出现在 `pytest_collect_errors` 字段里；
+     fixture 里特别注明"模块级 `pytest.skip(allow_module_level=True)` 不会产生 ERROR 行，
+     用那种写法测不到这条路径"，这是我第一版夹具失败后才确认的事实）、
+     `test_assertion_text_mentioning_access_denied_is_not_reclassified`
+     扩展为同时覆盖 `access is denied` 与 `PermissionError: [WinError 5]` 两种断言文案。
+- **同批附带：P1 沙箱纯逻辑层迁入 `src/`（step 1+2）**，按 `.tmp/p1_staging/MIGRATION.md`：
+  1. `sandbox_policy.py` → `src/patchpilot/sandbox/policy.py`、
+     `junit.py` → `sandbox/junit.py`、`workspace_copy.py` → `sandbox/workspace.py`
+     （模块内容逐字节复制后仅改 import 与 docstring：`from sandbox_policy import is_link_like`
+     → `from patchpilot.sandbox.policy import is_link_like`）；
+  2. `sandbox/__init__.py` 从占位 docstring 改为真正的导出面（**16 个公开名** + `__all__`）；
+  3. 三个离线验证器改写为 pytest：
+     `tests/test_sandbox_policy.py`（含 **Windows junction** 分支：先断言
+     `is_symlink() is False` 与 `is_link_like() is True` 作为前提自证，
+     再断言 `find_escaping_links` 恰好报 1 条且不递归展开；非 Windows 用 symlink 覆盖同一逻辑）、
+     `tests/test_junit.py`、`tests/test_workspace_copy.py`。
+     改写中发现并修正了我自己的一处测试 bug：`_args()` 里 `command or [...]` 会把
+     **空命令**（"拒绝空命令"用例的输入）替换成默认值，使该断言永远测不到真实分支。
+- **第九轮复审 REJECT（3 项 BLOCKING，均为真机 Docker 判决性证据）→ 已修**：
+  1. **短选项粘连写法整体击穿"拒绝清单"**：`extra_args=("-v<host>:/mnt/host",)` 与
+     `("-u0:0",)` 构造通过、生成通过、`assert_safe`/`assert_required_invariants` 双双放行；
+     审查者在 Docker 29.5.2 真机上用 `build_run_args` 的原样 argv 执行，得到
+     `id -u` = **0** 与 `ls /mnt/host` 列出**宿主目录**。
+     根因是 `arg.split("=", 1)[0]` 的精确比对拿到的是整个粘连串。
+     **修法**：改**允许清单**（`SAFE_EXTRA_FLAGS`，默认拒绝），并新增逐项消费取值的
+     `_validate_extra_args`（否则 `("--env", "FOO=1")` 这种合法分列写法会被误拒——
+     实测第一版修法就误拒了它）；`--entrypoint` 刻意不在清单内（可替换容器入口命令）。
+  2. **"非 root"不变量实际不成立**：`run_as="00:0"` 连 `assert_required_invariants` 都骗过
+     （字符串精确比对），`"0:1000"`/`"root:root"` 则因为**唯一生成入口从不调用配对校验**
+     而漏出，真机三者 `id -u` 都是 0。**修法**：`_validate_run_as` 按**数值**解析
+     （任一段为 0、非数字、负数、超过两段一律拒绝）；`build_run_args` 末尾补
+     `assert_required_invariants(args)`；`_flag_values` 改为返回**全部**出现，
+     重复 flag 直接拒绝（`--user 1000:1000 … --user 1000:0` 这种覆盖必须被发现）。
+  3. **`.git` 嵌套配置被复制进沙箱**：`GIT_STRIP_FILES` 只匹配顶层精确路径，于是
+     `.git/modules/<sub>/config`（常含 `https://user:ghp_…@github.com/...`）
+     与 `.git/worktrees/<wt>/config.worktree` 会被复制，审查者实测副本内**明文令牌仍在**。
+     **修法**：新增 `GIT_STRIP_TREES`（`.git/modules`、`.git/worktrees` 整目录丢弃）
+     与 `_is_git_config_like()`（`.git` 下任意层级的 `config`/`config.worktree`/`credentials`），
+     两条路径都进 `stripped_paths`。
+  4. 一并处理该轮非阻塞项：`workdir` 校验（真机 `"/workspace,readonly"` 会被 Docker 解析成
+     `ReadOnly=true`，即**逗号注入 mount 选项**）、`env` 变量名校验、`assert_safe` 校验
+     `args[1] == "run"`、`_parse_pytest_collection` 里重复的 `"="`
+     **死代码**、人类可读报告也打印收集期报错、`junit.parse_junit_xml` 对**不可信 XML**
+     加 8 MiB 体积上限并拒绝 `DOCTYPE/ENTITY`（ElementTree 官方明示不防恶意输入）。
+  5. **`environment_issue` 改为"写探针"**（审查者建议，比我原来的文本启发式更可靠）：
+     原实现两个方向都错过——真·`PermissionError` 的 traceback 行是 `E       PermissionError: …`
+     匹配不到，而 `print("PermissionError: …")` + `assert False` 又会被误判成环境问题。
+     现在直接对 basetemp 建/删一个探针文件来判定，与输出文本无关。
+  6. **"造不出链接就 fail"**（审查者指出原型注释"跳过的检查同样是缺陷"被我改写成了 skip）：
+     junction 用例（Windows 上不需要管理员权限，必然可造）与 workspace 复制用例改为
+     **fail**；symlink 用例在 Windows 上仍允许 skip，并注明"同一逻辑由 junction 用例覆盖"。
+  7. **重要教训（写进结论）**：原型 `verify_policy.py` 的 43/43 是**断言集不完整**，
+     不是"代码正确"——它只试过 `--privileged/--cap-add=SYS_ADMIN/--network=host/--pid=host`，
+     从未覆盖短选项粘连写法。**"全绿"只能证明"已声明的断言全部成立"**，
+     不能证明"没有被绕过的路径"；安全层因此必须有真机端到端用例。
+  8. **补上真机端到端验证** `.tmp/verify_sandbox_container.py`（在 `.tmp/` 内，不进摘要）：
+     直接拿 `build_run_args` 的 argv 在 Docker 29.5.2 上跑，结果 **10/10 通过**并**落盘日志**
+     `.tmp/verify_sandbox_container.out`（闭合第八轮登记的"真机验证缺落盘日志"）：
+     容器可用并能读挂载的工作区、`id -u`=1000、宿主目录未挂载（看不到宿主机密文件）、
+     根文件系统只读（`Errno 30`）、`/tmp` tmpfs 可写、网络不可达（`Errno 101`）、
+     **18 种参数注入拼写全部在构造期被拒**（含两轮审查各自的粘连/捆绑写法）、
+     超时被宿主侧截断（8.2s）且容器无残留。
+     按复审建议：**不 `docker pull`**（`docker image inspect` 预检 + `--pull=never`，
+     避免给门禁引入网络依赖）、注入拼写表与单测共用、Docker 缺失时 skip 而注入生效时 fail。
+  9. **第九轮复审第二轮 REJECT（3 项 BLOCKING）→ 已修**：
+     1. **布尔短选项捆绑写法击穿允许清单**：`extra_args=("-iu0:0",)` 与 `("-iv<host>:/mnt/host",)`
+        通过全部四道校验（pflag 语义：`-i` 后的字符继续当选项解析 → `-i` + `-u0:0`），
+        真机分别得到 `id -u` = **0** 与宿主目录列表。**修法**：把**布尔**短选项 `-i`/`-t`
+        整体移出允许清单（只保留长写法 `--init`/`--tty`/`--interactive`）；
+        **取值**型短选项（`-e/-l/-w/-h`）保留，因为它们的后续字符会被当成取值
+        （`-eu0:0` 只是把 `u0:0` 当取值，实测无危害）。补 `-iu0:0`/`-iv…`/`-tu0:0`/`-tv…`/
+        `-tiu0:0` 与"允许短选项 × 危险短选项"穷举用例。
+     2. **嵌套仓库的 `.git` 仍被复制**：上一轮把锚点写成"**首段**必须是 `.git`"，
+        于是 `vendor/.git/config`（`ghp_…` 令牌）与 `vendor/.git/hooks/post-checkout`
+        照样进副本——与上一轮同一类缺陷，只是 `.git` 不在路径首段。
+        实测修正：`_is_git_config_like` 改为"任意祖先段是 `.git`"，
+        新增 `_is_git_hooks_dir`（`<任意>.git/hooks` 整目录丢弃）。
+     3. **两处新逻辑零测试覆盖**（规程第 4 条）：`GIT_STRIP_TREES`/`_is_git_config_like`
+        与写探针 `_is_writable_dir` 当时都没有用例。现在新增
+        `test_all_git_credential_paths_are_stripped`（夹具铺开三类共 9 条路径，
+        断言副本内不存在、`stripped_paths` 如实记录、且**副本内任何文件都不再含 `ghp_`**）
+        与写探针正/反例 + "basetemp 不可写 → 报环境问题"的端到端用例。
+     4. 非阻塞一并处理：symlink 用例在**非 Windows 上改为 fail**（Windows 上仍 skip 并注明
+        "同一逻辑由 junction 用例覆盖"）；`test_build_run_args_checks_invariants_on_generation`
+        从"断言源码文本"改为**行为断言**（生成物必须通过配对校验 + 人为破坏后必须抛错）；
+        `MAX_JUNIT_BYTES` 上限同时作用于内存入口 `parse_junit_text`；
+        `workdir` 限制在 `/workspace` 或 `/tmp` 子树（`workdir="/"` 会遮蔽整个 rootfs）；
+        README 的 P1 行同步为本轮实测结果。
+- **文件**：`src/patchpilot/core/preflight.py`、`src/patchpilot/sandbox/{__init__,policy,junit,workspace}.py`、
+  `tests/test_preflight.py`、`tests/{test_sandbox_policy,test_junit,test_workspace_copy}.py`、
+  `README.md`、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → 本批**基线**（`0ad9ea8`）为 **92 passed + 1 skipped**；
+    本批后 **183 passed + 3 skipped = 186 项执行**，0 failed / 0 error
+    （逐文件收集：budget 11 / checkpointer 4 / config 7 / **junit 18** / minimal_graph 14 /
+    **preflight 49** / pricing 6 / **sandbox_policy 59** / tracing 6 / **workspace_copy 12**；
+    3 个 skip：2 个是 Windows 无 symlink 权限的平台分支——**同一逻辑由 junction 用例真跑覆盖**，
+    1 个是既有的"已装 postgres 后端"分支）
+  - `pp check --json` ×2 → `ok=True files=42 checks=10 fail=[]`，摘要两次逐字符相同
+    （取值见审查者复算；本条目不写具体值，理由同上一条日志）
+  - 报告字段核对：`pytest_collect_errors` 已出现在 `--json` 输出与人类可读报告中
+- **审查**：**待第九轮复审**（本批 = 4 条非阻塞 + P1 沙箱纯逻辑层迁入，集中在
+  `preflight.py` 与 `sandbox/` 新增包）
+- **提交**：待本轮推送
 
 ### [2026-10-16] P0 发布完成：commit `0ad9ea8` 已推送 `origin/main`
 

@@ -564,11 +564,11 @@ def test_non_git_directory_still_skips_index_binding(
 
 
 def test_assertion_text_mentioning_access_denied_is_not_reclassified(tmp_path: Path) -> None:
-    """八轮非阻塞 3：真实失败的输出里若出现 "access is denied" 字样，不得被改写成"环境问题"。
+    """环境判据换成写探针后，输出文本**不得**再影响分类。
 
-    旧实现把 `access is denied` 当环境问题标志（人类可读文案），
-    一个断言消息里引用该短语就会让诊断指向"临时目录不可写"，掩盖真实失败。
-    现在只匹配异常类型串（PermissionError / WinError 5 / INTERNALERROR）。
+    历史：`access is denied`（人类可读文案）→ 收窄到异常类型串 → 仍会误判
+    `print("PermissionError: …")`。现在判据是"basetemp 能不能写"，与输出无关，
+    所以本用例恒应成立，作为反例之一保留。
     """
     _make_repo(
         tmp_path,
@@ -576,6 +576,9 @@ def test_assertion_text_mentioning_access_denied_is_not_reclassified(tmp_path: P
             "tests/test_msg.py": (
                 "def test_msg():\n"
                 "    assert False, 'access is denied'\n"
+                "\n"
+                "def test_msg2():\n"
+                "    assert False, 'PermissionError: [WinError 5] access is denied'\n"
             )
         },
     )
@@ -584,7 +587,102 @@ def test_assertion_text_mentioning_access_denied_is_not_reclassified(tmp_path: P
     check = _check_by_name(report, "pytest")
 
     assert check.status == "fail"
-    assert not check.detail.startswith("环境问题"), check.detail[:120]
+    assert not check.detail.startswith("环境问题"), check.detail[:160]
+
+
+def test_is_writable_dir_true_for_writable_path(tmp_path: Path) -> None:
+    """写探针正例：可写目录返回 True，且不留探针残留文件。
+
+    探针**不负责创建目录**（第十轮复审：`mkdir(parents=True)` 会把"目录不存在"
+    这种失败态自己修好再报成功），所以这里先用测试夹具把目录建出来。
+    """
+    from patchpilot.core.preflight import _is_writable_dir
+
+    target = tmp_path / "existing"
+    target.mkdir()
+
+    assert _is_writable_dir(target) is True
+    assert list(target.iterdir()) == [], "探针文件必须被清理掉"
+
+
+def test_is_writable_dir_false_for_missing_dir(tmp_path: Path) -> None:
+    """目录不存在 → False（而不是被探针自己 mkdir 出来再报 True）。"""
+    from patchpilot.core.preflight import _is_writable_dir
+
+    assert _is_writable_dir(tmp_path / "does" / "not" / "exist") is False
+
+
+def test_is_writable_dir_false_when_write_fails(tmp_path: Path, monkeypatch) -> None:
+    """写探针反例：写入抛 OSError 时返回 False（这是"环境问题"分类的唯一判据）。"""
+    from patchpilot.core import preflight as preflight_module
+
+    def boom(self: Path, *args: object, **kwargs: object) -> int:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+
+    assert preflight_module._is_writable_dir(tmp_path) is False
+
+
+def test_unwritable_basetemp_is_reported_as_environment_issue(tmp_path: Path, monkeypatch) -> None:
+    """端到端反例：basetemp 不可写时，`pytest` 项必须报"环境问题"而不是假装用例失败。
+
+    注意顺序：先建好仓库（`_make_repo` 也要写文件），**再**把 `Path.write_text` 打坏——
+    否则夹具自己就先炸了。同时确保仓库里有 `test_*.py`，否则会先撞上
+    "摘要范围内没有任何测试文件"那条 fail（另一条独立断言，不是本用例要测的）。
+    """
+    _make_repo(
+        tmp_path,
+        {
+            "src/app.py": "x = 1\n",
+            "tests/test_ok.py": "def test_ok():\n    assert True\n",
+        },
+    )
+
+    def deny(self: Path, *args: object, **kwargs: object) -> int:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(Path, "write_text", deny)
+
+    report = run_preflight(tmp_path, run_tests=True)
+    check = _check_by_name(report, "pytest")
+
+    assert check.status == "fail"
+    assert check.detail.startswith("环境问题"), check.detail[:160]
+
+
+def test_report_carries_pytest_collect_errors(tmp_path: Path) -> None:
+    """八轮非阻塞 1：收集期报错必须**进报告字段**，不能只活在 detail 文案里。
+
+    此前 `collect_pytest_scope` 已返回四元组，但 `_check_pytest` 把它截断成三元组，
+    于是"收集期报错"这条新证据永远到不了 `PreflightReport`——
+    审查者/CI 只能读文案，无法机器消费。
+
+    夹具用"导入不存在的模块"制造**真正的收集期错误**；
+    注意模块级 `pytest.skip(allow_module_level=True)` **不会**产生 ERROR 行
+    （它只是把该文件静默摘掉），所以那种写法测不到这条路径。
+    """
+    _make_repo(
+        tmp_path,
+        {
+            "tests/test_broken_import.py": (
+                "import this_module_does_not_exist_xyz\n"
+                "\n"
+                "def test_never():\n"
+                "    assert True\n"
+            )
+        },
+    )
+
+    report = run_preflight(tmp_path, run_tests=True)
+    check = _check_by_name(report, "pytest")
+
+    assert check.status == "fail"
+    assert "tests/test_broken_import.py" in report.pytest_missing_files
+    # 关键：证据进了报告字段（而不是只拼接在 detail 里）
+    assert report.pytest_collect_errors, "收集期报错必须出现在 pytest_collect_errors 字段"
+    assert any("test_broken_import.py" in line for line in report.pytest_collect_errors)
+    assert "收集期报错" in check.detail
 
 
 # ============================================================================
