@@ -43,7 +43,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | 🔧 **已出数字（自建 FastEval 6 题）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0040**、总 token 9,200、平均 **10.8s**、**P95 15.1s**（`deepseek-flash`，温度 0，镜像 `patchpilot-sandbox:0.1.0-py312`）；**待做**：SWE-bench Lite 50 题（BenchEval），那才是论文级数字 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 🔧 **已实现**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；语料与评测集入库（`eval/corpus/` + `eval/fast.jsonl`），`pp eval` 一条命令可复跑 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | 未开始（P5） |
-| 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | **部分完成**（JSONL trace 已通，Langfuse 待 P5） |
+| 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
 | 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | 未开始（P6） |
 | 8 | PC 可用 | Windows/macOS 上安装后本地可跑 | **已完成**（conda 环境 + `pp` 命令） |
 | 9 | 上传前门禁可自证范围 | 门禁输出的 pass 不得来自"被关掉的测试/未暂存的字节/没扫到的编码" | **已完成**（第八轮：三项阻塞修复 + 8 条判决性回归用例；`pp check` 10 项全绿） |
@@ -287,6 +287,38 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 6 完成**：全链路可观测（四类 span + `pp trace` 回放）
+
+- **背景**：此前 `observability/tracing.py` 已有 `Tracer`，但**修复闭环一行都没用**——
+  P0 的 `minimal.py` 用，P3 的 `repair.py` 没用，验收项 6 因此停在"部分完成"。
+- **改动**：
+  1. `RepairOptions` 增加 `trace_dir` 与 `price_overrides`；为 None 时**完全不产生 IO**
+     （离线测试与门禁不受影响）。
+  2. 四类 span 全部接入：**检索** `retrieval.search`、**LLM** `llm.generate`
+     （带 model 与 prompt 字符数）、**工具** `tool.apply_patch`（git）与
+     `tool.run_tests`（沙箱，带 exit_code/timed_out）、**成本** `record_usage`。
+  3. `finalize` 落盘 trace 并把路径写回状态；`pp run` 在结果表里打印 trace 路径。
+  4. 新增 `pp trace --limit N --verbose`：读 JSONL、按任务展开 span 耗时与属性，
+     用来回答"这个任务花了多少钱、哪一步慢、检索命中几个文件"。
+- **真机实测（`pp run` + `pp trace`）**：单个任务
+  `retrieval.search 28.9ms / llm.generate 1557.8ms / tool.apply_patch 393.7ms /
+  tool.run_tests 1855.0ms`，总耗时 3835ms，token 162+235，成本 **\$0.000165**，模型 `deepseek-flash`。
+- **修掉的 1 个真 bug（口径不一致）**：`_charge` 只要 `LLMResponse.cost_usd is None`
+  就把模型记成"未定价"，**不看价格表**；而 `Tracer.record_usage` 会按价格表算出正成本
+  → trace 里出现 `cost_usd > 0` 与 `cost_unknown = true` **自相矛盾**的组合（真机实测到）。
+  修法：`_charge` 先用 `estimate_cost_usd(..., options.price_overrides)` 再决定是否记未定价，
+  与 Tracer 同口径。
+- **文件**：`src/patchpilot/graph/repair.py`、`src/patchpilot/cli.py`、
+  `tests/test_tracing_pipeline.py`（新增 6 例）、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **495 passed + 4 skipped**，0 failed / 0 error
+  - 真机 `pp run`（真 DeepSeek + 真 Docker）→ 1 轮通过，trace 落盘
+  - 真机 `pp trace --verbose` → 四类 span 与耗时/成本均正确显示
+  - 新增 6 例专门钉这四类（断言落在**trace 的实际内容**上，而不是"Tracer 被调用过"）
+- **审查**：按用户指示的节拍，留待以后与该验收项一并复审
+- **提交**：见本批提交
 
 ### [2026-10-17] **验收项 3/4 实现完成**：`pp eval` 出真实数字 + 可复现报告
 

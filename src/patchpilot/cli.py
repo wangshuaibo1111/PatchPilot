@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -424,6 +425,7 @@ def run(
     sandbox_root = (copy_root or Path(tempfile.gettempdir()) / "patchpilot-sandbox").resolve()
     sandbox_root.mkdir(parents=True, exist_ok=True)
     base_policy = SandboxPolicy(sandbox_root=sandbox_root)
+    trace_dir = (pathlib.Path(tempfile.gettempdir()) / "patchpilot-traces").resolve()
     options = RepairOptions(
         repo=resolved_repo,
         issue_file=issue_file.resolve(),
@@ -432,6 +434,8 @@ def run(
         budget=settings.budget(),
         max_rounds=max_rounds,
         copy_root=sandbox_root,
+        trace_dir=trace_dir,
+        price_overrides=settings.price_overrides,
     )
 
     with console.status("修复中…"):
@@ -448,6 +452,7 @@ def run(
     table.add_row("失败归因", str(final.get("failure_kind", "")))
     table.add_row("预算熔断", str(final.get("budget_exceeded", "")) or "<未触发>")
     table.add_row("补丁文件", str(final.get("final_patch_path", "")) or "<未产出>")
+    table.add_row("trace", str(final.get("trace_path", "")) or "<未产出>")
     console.print(table)
 
     if final.get("budget_exceeded"):
@@ -538,6 +543,78 @@ def eval_command(
     target = out or (Path("eval") / "report.json")
     path = write_report(report, target)
     console.print(f"报告已写入 [bold]{path}[/bold]")
+
+
+@app.command()
+def trace(
+    limit: int = typer.Option(5, "--limit", help="显示最近 N 条 trace"),
+    trace_dir: Path | None = typer.Option(None, "--trace-dir", help="trace 目录"),
+    verbose: bool = typer.Option(False, "--verbose", help="展开每个 span 的耗时"),
+) -> None:
+    """**验收项 6**：回放最近的任务 trace（LLM / 工具 / 检索 / 成本）。
+
+    trace 是 JSONL，一天一个文件；这里读最近的若干条并展开 span，
+    用于回答"这个任务花了多少钱、哪一步慢、检索命中几个文件"。
+    """
+    import tempfile
+
+    directory = (
+        trace_dir or pathlib.Path(tempfile.gettempdir()) / "patchpilot-traces"
+    ).resolve()
+    if not directory.is_dir():
+        console.print(f"[yellow]暂无 trace 目录：{directory}[/yellow]")
+        raise typer.Exit(code=1)
+
+    records: list[dict] = []
+    for path in sorted(directory.glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if not records:
+        console.print(f"[yellow]{directory} 下没有可读的 trace[/yellow]")
+        raise typer.Exit(code=1)
+
+    for record in records[-limit:]:
+        table = Table(title=f"trace {record.get('trace_id', '')} · {record.get('name', '')}")
+        table.add_column("字段", style="bold")
+        table.add_column("值")
+        table.add_row("状态", str(record.get("status", "")))
+        table.add_row("任务", str(record.get("task_id", "")) or "<无>")
+        table.add_row("通过", "是" if record.get("passed") else "否")
+        table.add_row("轮数", str(record.get("rounds", "")))
+        table.add_row("候选文件", str(record.get("candidates", "")))
+        table.add_row("耗时 (ms)", f"{float(record.get('duration_ms', 0.0)):.1f}")
+        table.add_row(
+            "token",
+            f"{record.get('prompt_tokens', 0)} + {record.get('completion_tokens', 0)}",
+        )
+        cost = float(record.get("cost_usd", 0.0))
+        unknown = record.get("cost_unknown")
+        suffix = "（**含未定价模型，成本不可信**）" if unknown else ""
+        table.add_row("成本 (USD)", f"{cost:.6f}{suffix}")
+        table.add_row("模型", ", ".join(record.get("models") or []) or "<无>")
+        spans = record.get("spans") or []
+        by_name: dict[str, int] = {}
+        for span in spans:
+            by_name[span["name"]] = by_name.get(span["name"], 0) + 1
+        table.add_row(
+            "span",
+            ", ".join(f"{k}×{v}" for k, v in sorted(by_name.items())) or "<无>",
+        )
+        console.print(table)
+        if verbose:
+            for span in spans:
+                attrs = span.get("attributes") or {}
+                console.print(
+                    f"  · {span['name']:<22} "
+                    f"{float(span.get('duration_ms', 0.0)):>8.2f}ms  "
+                    f"{json.dumps(attrs, ensure_ascii=False)}"
+                )
 
 
 if __name__ == "__main__":  # pragma: no cover

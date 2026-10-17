@@ -32,10 +32,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Protocol, TypedDict
@@ -46,6 +47,8 @@ from patchpilot.core.budget import Budget, BudgetExceeded, BudgetTracker
 from patchpilot.core.llm import ChatMessage, LLMClient, LLMResponse
 from patchpilot.core.logging import get_logger
 from patchpilot.core.models import FailureKind
+from patchpilot.core.pricing import estimate_cost_usd
+from patchpilot.observability.tracing import Tracer
 from patchpilot.sandbox.manager import SandboxResult, run_pytest_in_sandbox
 from patchpilot.sandbox.policy import SandboxPolicy
 from patchpilot.sandbox.workspace import copy_workspace
@@ -62,6 +65,10 @@ def _merge_notes(left: list[str] | None, right: list[str] | None) -> list[str]:
 def _merge_memory(left: list[str] | None, right: list[str] | None) -> list[str]:
     """失败记忆通道：累加但有上界（长回环不能把状态撑爆）。"""
     return (list(left or []) + list(right or []))[-MEMORY_LIMIT:]
+
+
+#: 未启用 trace 时的空 span（让节点代码只有一条路径，不必到处写 if tracer）
+_NULL_SPAN = contextlib.nullcontext()
 
 
 # ---------------------------------------------------------------- 可注入的两处依赖
@@ -98,6 +105,9 @@ class RepairOptions:
     # 补丁产物目录。**默认必须与 issue 文件分开**：评测时 issue 文件在语料仓库里，
     # 早先按 `issue_file.parent` 落盘会把 `*.diff` 写进被评测的仓库（实测污染了 6 个语料目录）。
     output_dir: Path | None = None
+    # trace 目录。为 None 时**完全不产生 IO**（离线测试与门禁不受影响）。
+    trace_dir: Path | None = None
+    price_overrides: Mapping[str, tuple[float, float]] | None = None
 
     def __post_init__(self) -> None:
         if self.max_rounds < 1:
@@ -129,6 +139,7 @@ class RepairState(TypedDict, total=False):
     memory: Annotated[list[str], _merge_memory]
     failure_kind: str
     final_patch_path: str
+    trace_path: str
     # 预算/观测
     started_at: float
     prompt_tokens: int
@@ -241,6 +252,11 @@ def build_repair_graph(
     log = get_logger("repair")
     _runner: TestRunner = runner or _default_runner(options)
     _applier: PatchApplier = applier or _default_applier
+    tracer = (
+        Tracer(options.trace_dir, "repair", price_overrides=options.price_overrides)
+        if options.trace_dir is not None
+        else None
+    )
 
     def _guard(
         state: RepairState, body: Callable[[BudgetTracker], dict[str, Any]]
@@ -260,6 +276,16 @@ def build_repair_graph(
 
     def _charge(tracker: BudgetTracker, response: LLMResponse) -> None:
         cost = response.cost_usd
+        if cost is None:
+            # 客户端没给成本时**先查价格表**再宣布"未定价"：否则配了价格表的模型也会被
+            # 记成 unpriced，导致 trace 里 `cost_usd > 0` 与 `cost_unknown = true` **自相矛盾**
+            # （真机 trace 实测到这一组合）。口径必须与 `Tracer.record_usage` 一致。
+            cost = estimate_cost_usd(
+                response.model,
+                response.prompt_tokens,
+                response.completion_tokens,
+                options.price_overrides,
+            )
         if cost is None:
             tracker.mark_unpriced(response.model)
             tracker.charge(
@@ -310,21 +336,23 @@ def build_repair_graph(
             return {"candidates": [], "notes": ["locate: 无 issue，跳过"]}
         terms = extract_terms(state.get("issue", ""))
         hits: list[str] = []
-        for term in terms:
-            for match in search_server.search_symbol(options.repo, term):
-                if match.path not in hits:
-                    hits.append(match.path)
-            if len(hits) >= options.locate_limit:
-                break
-        if not hits:  # 符号找不到就退化为文本检索
+        sink = tracer.span("retrieval.search", terms=len(terms)) if tracer else _NULL_SPAN
+        with sink:
             for term in terms:
-                for match in search_server.search_text(
-                    options.repo, term, max_results=options.locate_limit
-                ):
+                for match in search_server.search_symbol(options.repo, term):
                     if match.path not in hits:
                         hits.append(match.path)
                 if len(hits) >= options.locate_limit:
                     break
+            if not hits:  # 符号找不到就退化为文本检索
+                for term in terms:
+                    for match in search_server.search_text(
+                        options.repo, term, max_results=options.locate_limit
+                    ):
+                        if match.path not in hits:
+                            hits.append(match.path)
+                    if len(hits) >= options.locate_limit:
+                        break
         log.info("repair.locate", candidates=len(hits))
         update: dict[str, Any] = {
             "candidates": hits[: options.locate_limit],
@@ -340,8 +368,23 @@ def build_repair_graph(
         def body(tracker: BudgetTracker) -> dict[str, Any]:
             round_no = tracker.start_attempt()
             prompt = build_prompt(state, options)
-            response = _complete(llm, prompt)
+            llm_ctx = (
+                tracer.span("llm.generate", round=round_no, prompt_chars=len(prompt))
+                if tracer
+                else _NULL_SPAN
+            )
+            with llm_ctx as llm_span:
+                response = _complete(llm, prompt)
+                if llm_span is not None:
+                    llm_span.attributes["model"] = response.model
+                    llm_span.attributes["text_chars"] = len(response.text)
             _charge(tracker, response)
+            if tracer is not None:
+                tracer.record_usage(
+                    model=response.model,
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                )
             patch = extract_patch(response.text)
             note = (
                 f"generate: 第 {round_no} 轮产出补丁（{len(patch)} 字符）"
@@ -384,8 +427,14 @@ def build_repair_graph(
         try:
             Path(base).mkdir(parents=True, exist_ok=True)
             workspace = Path(base) / f"ws-{state.get('round', 0)}-{uuid.uuid4().hex[:6]}"
-            copy_workspace(options.repo, workspace)
-            detail = _applier(workspace=workspace, patch=patch)
+            tool_ctx = (
+                tracer.span("tool.apply_patch", round=state.get("round", 0))
+                if tracer
+                else _NULL_SPAN
+            )
+            with tool_ctx:
+                copy_workspace(options.repo, workspace)
+                detail = _applier(workspace=workspace, patch=patch)
             ok = True
         except Exception as exc:  # noqa: BLE001 - 统一归一化为失败记忆
             ok = False
@@ -406,10 +455,19 @@ def build_repair_graph(
             return {"test_summary": {}, "passed": False, "notes": ["run_tests: 跳过（补丁未应用）"]}
 
         def body(tracker: BudgetTracker) -> dict[str, Any]:
-            result = _runner(
-                source=Path(state.get('workspace') or options.repo),
-                pytest_args=options.tests,
+            test_ctx = (
+                tracer.span("tool.run_tests", round=state.get("round", 0))
+                if tracer
+                else _NULL_SPAN
             )
+            with test_ctx as test_span:
+                result = _runner(
+                    source=Path(state.get("workspace") or options.repo),
+                    pytest_args=options.tests,
+                )
+                if test_span is not None:
+                    test_span.attributes["exit_code"] = result.exit_code
+                    test_span.attributes["timed_out"] = result.timed_out
             report = result.report
             summary = {
                 "ok": result.ok,
@@ -483,8 +541,26 @@ def build_repair_graph(
             f"finalize: {'通过' if state.get('passed') else '未通过'}，"
             f"补丁写入 {path or '<失败>'}，共 {state.get('round', 0)} 轮"
         )
+        trace_path = ""
+        if tracer is not None:
+            trace_path = str(
+                tracer.finish(
+                    status="ok" if state.get("passed") else "failed",
+                    task_id=state.get("task_id", ""),
+                    rounds=int(state.get("round", 0) or 0),
+                    passed=bool(state.get("passed")),
+                    failure_kind=str(state.get("failure_kind", "")),
+                    budget_exceeded=str(state.get("budget_exceeded", "") or ""),
+                    candidates=len(state.get("candidates", []) or []),
+                    patch_chars=len(patch),
+                    graph_prompt_tokens=int(state.get("prompt_tokens", 0) or 0),
+                    graph_completion_tokens=int(state.get("completion_tokens", 0) or 0),
+                    unpriced_models=list(state.get("unpriced_models", []) or []),
+                )
+            )
+            note += f"，trace {trace_path}"
         log.info("repair.finalize", passed=bool(state.get("passed")), path=path)
-        return {"final_patch_path": path, "notes": [note]}
+        return {"final_patch_path": path, "trace_path": trace_path, "notes": [note]}
 
     # ---------------- 路由
     def after_load(state: RepairState) -> str:
