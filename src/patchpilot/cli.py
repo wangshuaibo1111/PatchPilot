@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -453,6 +454,90 @@ def run(
         console.print(f"[yellow]预算终止：{final['budget_exceeded']}[/yellow]")
     if not final.get("passed"):
         raise typer.Exit(code=1)
+
+
+@app.command("eval")
+def eval_command(
+    dataset: Path = typer.Option(
+        Path("eval/fast_corpus.json"), "--dataset", help="评测集路径（JSON 容器或 JSONL）"
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="只跑前 N 题（冒烟用）"),
+    max_rounds: int = typer.Option(3, "--max-rounds", help="每题最多重试轮数"),
+    out: Path | None = typer.Option(None, "--out", help="报告落盘路径（JSON）"),
+    work_root: Path | None = typer.Option(None, "--work-root", help="工作目录（默认系统临时目录）"),
+) -> None:
+    """**验收项 3/4**：跑评测集，输出 pass@1 + 成本 + P95，并落盘可复现报告。
+
+    判定口径：`fail_to_pass` 修复前必须失败、修复后必须通过；`pass_to_pass` 前后都通过。
+    修复前就绿的题会被标成 `invalid_task` 并从分母里排除（否则指标没有意义）。
+    """
+    import tempfile
+
+    from patchpilot.core.llm import build_llm
+    from patchpilot.eval.dataset import DatasetError, load_tasks
+    from patchpilot.eval.runner import run_eval, write_report
+
+    settings: Settings = get_settings()
+    configure_logging(settings)
+
+    try:
+        tasks = load_tasks(dataset)
+    except DatasetError as exc:
+        console.print(f"[red]评测集错误：{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    root = (work_root or Path(tempfile.gettempdir()) / "patchpilot-eval").resolve()
+    report = run_eval(
+        tasks=tasks,
+        llm=build_llm(settings),
+        dataset_name=dataset.name,
+        work_root=root,
+        budget=settings.budget(),
+        max_rounds=max_rounds,
+        model_name=settings.llm_model,
+        limit=limit,
+    )
+
+    table = Table(title=f"pp eval：{report.dataset}")
+    table.add_column("题目", style="bold")
+    table.add_column("状态")
+    table.add_column("轮数")
+    table.add_column("耗时(s)")
+    table.add_column("成本($)")
+    table.add_column("说明")
+    for outcome in report.outcomes:
+        style = {"passed": "green", "failed": "red"}.get(outcome.status, "yellow")
+        table.add_row(
+            outcome.task_id,
+            f"[{style}]{outcome.status}[/{style}]",
+            str(outcome.rounds),
+            f"{outcome.duration_s:.1f}",
+            f"{outcome.cost_usd:.4f}",
+            outcome.detail[:60],
+        )
+    console.print(table)
+
+    metrics = Table(title="指标")
+    metrics.add_column("指标", style="bold")
+    metrics.add_column("值")
+    metrics.add_row("总题数 / 有效题数", f"{report.total} / {report.valid}")
+    metrics.add_row("通过", str(report.passed))
+    metrics.add_row("**pass@1**", f"{report.pass_at_1:.1%}")
+    metrics.add_row("总成本 (USD)", f"{report.total_cost_usd:.4f}")
+    metrics.add_row("总 token", str(report.total_tokens))
+    metrics.add_row("平均耗时 (s)", f"{report.mean_latency():.1f}")
+    metrics.add_row("P95 耗时 (s)", f"{report.latency_p95():.1f}")
+    metrics.add_row("失败分布", json.dumps(report.failure_histogram(), ensure_ascii=False))
+    metrics.add_row(
+        "可复现信息",
+        f"commit={str(report.meta.get('commit', ''))[:8]} "
+        f"温度={report.meta.get('temperature')} 镜像={report.meta.get('image')}",
+    )
+    console.print(metrics)
+
+    target = out or (Path("eval") / "report.json")
+    path = write_report(report, target)
+    console.print(f"报告已写入 [bold]{path}[/bold]")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -37,4 +37,3 @@ node_modules/
 htmlcov/
 *.dist-info/
 *.egg-link
-

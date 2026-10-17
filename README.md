@@ -176,7 +176,7 @@ PatchPilot\
 | **P1** | 沙箱与工具：Docker 隔离 + 4 个 MCP Server（fs/git/test/search）+ 4 类安全用例 | ✅ **已完成**（验收项 2）：沙箱驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server 已在 stdio 协议层验证**；自建执行镜像 `docker/sandbox/Dockerfile`；**真机 Docker 端到端 15/15**（uid=1000、宿主不可见、rootfs 只读、网络不可达、内存 OOM rc=137、pids 超限 fork 被拒、超时截断且无残留）；单测 452 |
 | **P2** | 检索与定位：符号索引、BM25 + 向量 + 调用图召回、重排 | 未开始 |
 | **P3** | 修复闭环：补丁生成、`fail_to_pass` / `pass_to_pass` 判定、有限轮次自省 | 未开始 |
-| **P4** | 评测闭环：SWE-bench 子集 runner、消融矩阵、成本/耗时曲线 | 未开始 |
+| **P4** | 评测闭环：SWE-bench 子集 runner、消融矩阵、成本/耗时曲线 | 🔧 **FastEval 已实现**：`pp eval` 一条命令出报告 —— 自建 6 题 `pass@1 = 6/6`、总成本 \$0.0040、P95 15.1s（温度 0、镜像锁定 tag，报告含题目 id/commit/镜像，第三方可照着重跑）；**待做**：BenchEval（SWE-bench Lite 50 题）与策略消融矩阵 |
 | **P5–P7** | 可观测性（OTel/Langfuse）、服务化（FastAPI + SSE）、Web 控制台（Next.js） | 未开始 |
 
 **本 README 里的"已达标"仅指已验证的部分**；未开始的阶段一律标注"未开始"，不预支结论。

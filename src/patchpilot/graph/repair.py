@@ -95,6 +95,9 @@ class RepairOptions:
     max_rounds: int = 3
     locate_limit: int = 8
     copy_root: Path | None = None
+    # 补丁产物目录。**默认必须与 issue 文件分开**：评测时 issue 文件在语料仓库里，
+    # 早先按 `issue_file.parent` 落盘会把 `*.diff` 写进被评测的仓库（实测污染了 6 个语料目录）。
+    output_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.max_rounds < 1:
@@ -109,6 +112,10 @@ class RepairState(TypedDict, total=False):
     # 生成/应用
     patch: str
     apply_ok: bool
+    # `workspace` **必须**是声明的通道：LangGraph 会**静默丢弃**未声明的键，
+    # 于是 `run_tests` 里 `state.get("workspace")` 恒为空，悄悄回落到未打补丁的
+    # 源仓库，表现为「每轮都失败但补丁其实是好的」。与 `attempts` 同一类坑。
+    workspace: str
     # 验证
     test_summary: dict[str, Any]
     passed: bool
@@ -464,8 +471,10 @@ def build_repair_graph(
     # ---------------- 节点 8：finalize
     def finalize(state: RepairState) -> dict[str, Any]:
         patch = state.get("patch", "")
-        target = options.issue_file.parent / f"patchpilot-{state.get('task_id', 'task')}.diff"
+        out_dir = options.output_dir or (options.issue_file.parent / "patchpilot-out")
+        target = Path(out_dir) / f"patchpilot-{state.get('task_id', 'task')}.diff"
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(patch, encoding="utf-8")
             path = str(target)
         except OSError:

@@ -40,8 +40,8 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | 🔧 **已实现并真机跑通**：8 节点修复闭环（`graph/repair.py`）+ `pp run` 命令；**真机端到端（DeepSeek 真模型 + Docker 沙箱）在本地仓库上完成一次修复并通过测试**；待收口：多仓库泛化与失败率统计（P4 评测） |
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | 🔧 **待收口**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**、**452 项单测全绿**；**残余**：`apply_patch` 路径安全的"git 清单为空"分支未经独立复审（按用户指示留待以后检查） |
-| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | 未开始（P4） |
-| 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 未开始（P4） |
+| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | 🔧 **已出数字（自建 FastEval 6 题）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0040**、总 token 9,200、平均 **10.8s**、**P95 15.1s**（`deepseek-flash`，温度 0，镜像 `patchpilot-sandbox:0.1.0-py312`）；**待做**：SWE-bench Lite 50 题（BenchEval），那才是论文级数字 |
+| 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 🔧 **已实现**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；语料与评测集入库（`eval/corpus/` + `eval/fast.jsonl`），`pp eval` 一条命令可复跑 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | 未开始（P5） |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | **部分完成**（JSONL trace 已通，Langfuse 待 P5） |
 | 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | 未开始（P6） |
@@ -287,6 +287,50 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 3/4 实现完成**：`pp eval` 出真实数字 + 可复现报告
+
+- **新增**：
+  1. `src/patchpilot/eval/dataset.py` —— 评测集格式（JSONL）+ **加载期校验**。
+     拒绝四类会让"度量衡"失效的题：`fail_to_pass` 为空、镜像用 `latest`、
+     仓库/issue 路径不存在、题目 id 重复。
+  2. `src/patchpilot/eval/runner.py` —— 评测运行器。判定口径与 SWE-bench 对齐：
+     **先验证 `fail_to_pass` 在修复前确实失败**（题目前提），再让修复闭环跑，
+     最后用闭环产出的补丁在**全新副本**上独立复核 `fail_to_pass + pass_to_pass`。
+     修复前就绿的题标成 `invalid_task` 并**从分母排除**（否则指标没有意义）。
+  3. `pp eval` 命令 —— 表格输出逐题状态 + 汇总指标（pass@1 / 成本 / token / 平均与
+     P95 耗时 / 失败分布 / 可复现信息），并把完整报告落盘为 JSON（验收项 4）。
+  4. `eval/corpus/`（6 个自建小仓库）+ `eval/fast.jsonl` —— 自建 **FastEval** 评测集。
+     每题都带一个"修复前必须失败"的用例与一个"前后都必须通过"的用例。
+- **真实数字（本轮产出）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0040**、总 token 9,200、
+  平均 **10.8s**、**P95 15.1s**（`deepseek-flash`，温度 0，镜像 `patchpilot-sandbox:0.1.0-py312`）。
+  这是**自建 6 题**的结果，不能与 SWE-bench 数字混谈——Lite 50 题属后续 BenchEval。
+- **过程中修掉的 3 个真 bug**（都由"数字不对"倒查出来）：
+  1. **`workspace` 不是声明的状态通道**：LangGraph **静默丢弃**未声明的键 →
+     `run_tests` 拿到的副本路径恒为空 → 悄悄回落到**未打补丁的源仓库** →
+     表现为"6 道题全 failed，但每轮产出的补丁逐字符相同且内容正确"。
+     这与 `attempts` 是同一类坑；已补 `workspace` 通道 + 一条端到端用例钉住
+     （断言 `runner` 收到的目录里**必须已含补丁**，且不等于源仓库）。
+  2. **补丁产物写进被评测的仓库**：`finalize` 原先按 `issue_file.parent` 落盘，
+     评测时那正是语料目录 → 6 个语料目录里被写入 `*.diff`（自己也成了脏数据）。
+     新增 `RepairOptions.output_dir`，评测器指向工作目录。
+  3. **5 道题的前提不成立**（自查脚本在**真沙箱**里逐题验证后才发现）：
+     `fast-001` 的 `pass_to_pass` 断言本身写错；`fast-002` 的 bug 不会让那条断言失败；
+     `fast-004` 只有一个匹配键时 `del` 后循环即结束、**不抛 RuntimeError**；
+     `fast-005` 的 Python `sorted(reverse=True)` 是**稳定**的，同分本来就保序（该 bug 不存在）；
+     `fast-006` 的 `"a=".split("=")` 长度为 2、**不抛 ValueError**。
+     全部重写后 6/6 前提成立。**这条最能说明"前提校验"的价值**：
+     若不校验，这 5 道题会让 `pass@1` 变成无意义的数字。
+- **文件**：`src/patchpilot/eval/{dataset,runner}.py`（新增）、`src/patchpilot/cli.py`、
+  `src/patchpilot/graph/repair.py`、`eval/corpus/**`、`eval/fast.jsonl`、
+  `eval/report.json`、`tests/test_eval.py`（新增 21 例）、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **489 passed + 4 skipped**，0 failed / 0 error
+  - **真机** `pp eval`（真 DeepSeek + 真 Docker）→ **6/6 passed**，报告落盘
+  - 语料前提校验（真沙箱逐题跑）→ **6/6 成立**
+- **审查**：按用户指示的节拍，留待以后与该验收项一并复审
+- **提交**：见本批提交
 
 ### [2026-10-17] **验收项 1 实现完成**：`pp run` 一条命令在本地仓库上完成一次修复
 

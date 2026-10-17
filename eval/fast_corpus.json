@@ -1,0 +1,130 @@
+{
+  "image": "patchpilot-sandbox:0.1.0-py312",
+  "tasks": [
+    {
+      "id": "fast-001-off-by-one",
+      "files": {
+        "chunker.py": "\"\"\"把文本切成固定大小的块。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef chunk(text: str, size: int) -> list[str]:\n    \"\"\"按 size 个字符切块；最后一块可以短一些。\"\"\"\n    if size <= 0:\n        raise ValueError(\"size 必须为正数\")\n    return [text[i : i + size - 1] for i in range(0, len(text), size)]\n",
+        "tests/test_chunker.py": "import pytest\n\nfrom chunker import chunk\n\n\ndef test_chunk_sizes():\n    assert chunk(\"abcdef\", 2) == [\"ab\", \"cd\", \"ef\"]\n\n\ndef test_every_piece_within_size():\n    for piece in chunk(\"abcdef\", 3):\n        assert len(piece) <= 3\n\n\ndef test_negative_size_rejected():\n    with pytest.raises(ValueError):\n        chunk(\"abc\", 0)\n",
+        "Issue.md": "# 分块结果每块都比 `size` 少一个字符\n\n`chunk(\"abcdef\", 2)` 期望得到 `[\"ab\", \"cd\", \"ef\"]`，实际每块都少一个字符。\n\n```python\nfrom chunker import chunk\nchunk(\"abcdef\", 2)   # 期望 ['ab', 'cd', 'ef']\n```\n\n请修正 `chunk`，使每个块最多 `size` 个字符、内容不丢，`size <= 0` 仍要抛 `ValueError`。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_chunker.py::test_chunk_sizes"
+      ],
+      "pass_to_pass": [
+        "tests/test_chunker.py::test_every_piece_within_size",
+        "tests/test_chunker.py::test_negative_size_rejected"
+      ],
+      "tags": [
+        "fast",
+        "logic"
+      ]
+    },
+    {
+      "id": "fast-002-mutable-default",
+      "files": {
+        "collector.py": "\"\"\"收集事件的工具。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef record(event: str, history: list[str] = []) -> list[str]:\n    \"\"\"把事件记进历史并返回历史；不传 history 时应从空列表开始。\"\"\"\n    history.append(event)\n    return history\n\n\ndef record_many(events: list[str], history: list[str] = []) -> list[str]:\n    \"\"\"批量记录；不传 history 时应从空列表开始。\"\"\"\n    for event in events:\n        history.append(event)\n    return history\n",
+        "tests/test_collector.py": "from collector import record, record_many\n\n\ndef test_single_call_returns_only_that_event():\n    assert record(\"a\") == [\"a\"]\n\n\ndef test_second_call_starts_empty():\n    assert record(\"first\") == [\"first\"]\n    assert record(\"second\") == [\"second\"], \"第二次调用看到了上一次的事件\"\n\n\ndef test_record_many_starts_empty():\n    assert record_many([\"x\"]) == [\"x\"]\n    assert record_many([\"y\"]) == [\"y\"], \"第二次调用看到了上一次的事件\"\n\n\ndef test_explicit_history_is_extended():\n    history = [\"x\"]\n    assert record(\"y\", history) == [\"x\", \"y\"]\n    assert history == [\"x\", \"y\"]\n",
+        "Issue.md": "# 不传 `history` 时两次调用会串在一起\n\n`record` 与 `record_many` 的 `history` 参数用了可变默认值，于是\"上一次\"的记录会留到\"下一次\"：\n\n```python\nfrom collector import record\nrecord(\"first\")    # ['first']\nrecord(\"second\")   # 期望 ['second']，实际 ['first', 'second']\n```\n\n请修正这两个函数：不传 `history` 时每次都从空列表开始；显式传入时仍应追加到**同一个**列表。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_collector.py::test_second_call_starts_empty",
+        "tests/test_collector.py::test_record_many_starts_empty"
+      ],
+      "pass_to_pass": [
+        "tests/test_collector.py::test_single_call_returns_only_that_event",
+        "tests/test_collector.py::test_explicit_history_is_extended"
+      ],
+      "tags": [
+        "fast",
+        "python-semantics"
+      ]
+    },
+    {
+      "id": "fast-003-wrong-exception",
+      "files": {
+        "config.py": "\"\"\"读取配置。\"\"\"\n\nfrom __future__ import annotations\n\n\nclass ConfigError(Exception):\n    \"\"\"配置相关的错误。\"\"\"\n\n\ndef get(config: dict[str, str], key: str, default: str | None = None) -> str:\n    \"\"\"取配置项；缺失且没有默认值时抛 ConfigError，并指出缺的是哪个键。\"\"\"\n    if key not in config:\n        if default is not None:\n            return default\n        raise KeyError(f\"缺少配置项: {key}\")\n    return config[key]\n",
+        "tests/test_config.py": "import pytest\n\nfrom config import ConfigError, get\n\n\ndef test_missing_without_default_raises_config_error():\n    with pytest.raises(ConfigError) as excinfo:\n        get({}, \"timeout\")\n\n    assert \"timeout\" in str(excinfo.value)\n\n\ndef test_default_is_returned():\n    assert get({}, \"timeout\", \"30\") == \"30\"\n\n\ndef test_present_value_is_returned():\n    assert get({\"timeout\": \"10\"}, \"timeout\") == \"10\"\n",
+        "Issue.md": "# 配置缺失时抛出的异常类型不对\n\n调用方按文档捕获 `ConfigError`，但实际抛出的是 `KeyError`，导致上层没有兜住：\n\n```\nKeyError: '缺少配置项: timeout'\n```\n\n请修正 `get`，使\"缺失且无默认值\"时抛出 `ConfigError`（消息里仍要包含缺失的键名）。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_config.py::test_missing_without_default_raises_config_error"
+      ],
+      "pass_to_pass": [
+        "tests/test_config.py::test_default_is_returned",
+        "tests/test_config.py::test_present_value_is_returned"
+      ],
+      "tags": [
+        "fast",
+        "error-handling"
+      ]
+    },
+    {
+      "id": "fast-004-dict-iteration-mutation",
+      "files": {
+        "filters.py": "\"\"\"按前缀过滤配置项。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef drop_prefix(config: dict[str, str], prefix: str) -> dict[str, str]:\n    \"\"\"返回去掉指定前缀键之后的新字典（不修改入参）。\"\"\"\n    for key in config:\n        if key.startswith(prefix):\n            del config[key]\n    return config\n",
+        "tests/test_filters.py": "from filters import drop_prefix\n\n\ndef test_removes_two_matching_keys():\n    assert drop_prefix({\"a_1\": \"x\", \"a_2\": \"z\", \"b\": \"y\"}, \"a_\") == {\"b\": \"y\"}\n\n\ndef test_does_not_mutate_input():\n    original = {\"a_1\": \"x\", \"a_2\": \"z\", \"b\": \"y\"}\n    snapshot = dict(original)\n\n    drop_prefix(original, \"a_\")\n\n    assert original == snapshot, \"入参不应被修改\"\n\n\ndef test_no_match_returns_same_content():\n    assert drop_prefix({\"b\": \"y\"}, \"a_\") == {\"b\": \"y\"}\n",
+        "Issue.md": "# 去掉前缀键时报 `RuntimeError: dictionary changed size during iteration`\n\n只要待删的键超过一个就会崩：\n\n```python\nfrom filters import drop_prefix\ndrop_prefix({\"a_1\": \"x\", \"a_2\": \"z\", \"b\": \"y\"}, \"a_\")\n# RuntimeError: dictionary changed size during iteration\n```\n\n而且这个函数**不应该修改调用方传进来的字典**。\n\n请修正 `drop_prefix`：返回去掉匹配键的**新**字典，且不修改入参。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_filters.py::test_removes_two_matching_keys",
+        "tests/test_filters.py::test_does_not_mutate_input"
+      ],
+      "pass_to_pass": [
+        "tests/test_filters.py::test_no_match_returns_same_content"
+      ],
+      "tags": [
+        "fast",
+        "mutation"
+      ]
+    },
+    {
+      "id": "fast-005-topn-reversed",
+      "files": {
+        "ranking.py": "\"\"\"按分数挑出前 N 名。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef top_n(items: list[tuple[str, int]], n: int) -> list[str]:\n    \"\"\"按分数从高到低返回前 n 个名字。\"\"\"\n    if n <= 0:\n        return []\n    ordered = sorted(items, key=lambda pair: pair[1])\n    return [name for name, _score in ordered[:n]]\n",
+        "tests/test_ranking.py": "from ranking import top_n\n\n\ndef test_top_two_by_score():\n    assert top_n([(\"a\", 1), (\"b\", 3), (\"c\", 2)], 2) == [\"b\", \"c\"]\n\n\ndef test_single_highest():\n    assert top_n([(\"low\", 1), (\"high\", 9)], 1) == [\"high\"]\n\n\ndef test_zero_returns_empty():\n    assert top_n([(\"a\", 1)], 0) == []\n\n\ndef test_negative_returns_empty():\n    assert top_n([(\"a\", 1)], -3) == []\n\n\ndef test_n_larger_than_input():\n    assert top_n([(\"a\", 1), (\"b\", 2)], 5) == [\"b\", \"a\"]\n",
+        "Issue.md": "# `top_n` 返回的是分数**最低**的几个\n\n`top_n` 应该返回分数最高的前 n 名，但现在拿到的是最低的：\n\n```python\nfrom ranking import top_n\ntop_n([(\"a\", 1), (\"b\", 3), (\"c\", 2)], 2)   # 期望 ['b', 'c']，实际 ['a', 'c']\n```\n\n请修正排序方向，保持 `n <= 0` 返回空列表、`n` 大于总数时返回全部（仍按分数降序）。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_ranking.py::test_top_two_by_score",
+        "tests/test_ranking.py::test_single_highest",
+        "tests/test_ranking.py::test_n_larger_than_input"
+      ],
+      "pass_to_pass": [
+        "tests/test_ranking.py::test_zero_returns_empty",
+        "tests/test_ranking.py::test_negative_returns_empty"
+      ],
+      "tags": [
+        "fast",
+        "sorting"
+      ]
+    },
+    {
+      "id": "fast-006-none-handling",
+      "files": {
+        "parser.py": "\"\"\"解析键值行。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef parse_line(line: str) -> tuple[str, str] | None:\n    \"\"\"解析 `key=value`；注释行与空行返回 None。\n\n    值为空是合法的（返回 `(key, \"\")`）；值里含 `=` 时只按**第一个** `=` 切分；\n    没有 `=` 的行应抛 ValueError。\n    \"\"\"\n    stripped = line.strip()\n    if stripped.startswith(\"#\") or stripped == \"\":\n        return None\n    key, value = stripped.split(\"=\")\n    return key.strip(), value.strip()\n",
+        "tests/test_parser.py": "import pytest\n\nfrom parser import parse_line\n\n\ndef test_parses_simple_pair():\n    assert parse_line(\"a=1\") == (\"a\", \"1\")\n\n\ndef test_empty_value_is_allowed():\n    assert parse_line(\"a=\") == (\"a\", \"\")\n\n\ndef test_value_may_contain_equals():\n    assert parse_line(\"a=b=c\") == (\"a\", \"b=c\")\n\n\ndef test_missing_equals_raises_value_error():\n    with pytest.raises(ValueError):\n        parse_line(\"a1\")\n\n\ndef test_comment_and_blank_return_none():\n    assert parse_line(\"# note\") is None\n    assert parse_line(\"   \") is None\n",
+        "Issue.md": "# 值里含 `=` 的行解析失败\n\n`a=b=c` 这种\"值里还有等号\"的行应该解析成 `(\"a\", \"b=c\")`（只按第一个 `=` 切分），\n但现在会崩：\n\n```\nValueError: too many values to unpack (expected 2)\n```\n\n另外 `a1`（完全没有 `=`）这种行应该抛 `ValueError` 并说明缺少 `=`。\n\n请修正 `parse_line`，同时保持注释行/空行返回 `None`、空值合法的行为不变。\n"
+      },
+      "issue_file": "Issue.md",
+      "fail_to_pass": [
+        "tests/test_parser.py::test_value_may_contain_equals",
+        "tests/test_parser.py::test_missing_equals_raises_value_error"
+      ],
+      "pass_to_pass": [
+        "tests/test_parser.py::test_parses_simple_pair",
+        "tests/test_parser.py::test_empty_value_is_allowed",
+        "tests/test_parser.py::test_comment_and_blank_return_none"
+      ],
+      "tags": [
+        "fast",
+        "parsing"
+      ]
+    }
+  ]
+}
