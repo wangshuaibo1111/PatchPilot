@@ -45,8 +45,8 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
 | 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | ✅ **已完成（真机验证）**：`pp serve` 起只读面板（`/` 单页 + `/api/traces`、`/api/traces/{id}`、`/api/evals`、`/api/health`）；`docker-compose.yml` 增加 `panel` 服务（`docker/app/Dockerfile`，**零前端构建**、trace 与评测产物只读挂载、带 HEALTHCHECK）。**实测**：镜像构建成功（237MB）、容器起来后读到宿主的真实 trace（`{"traces":1}`）、首页含轨迹与 span 时间线、`/api/evals` 返回 pass@1 指标、`docker compose config` 校验通过（4 个服务） |
-| 8 | PC 可用 | Windows/macOS 上安装后本地可跑 | **已完成**（conda 环境 + `pp` 命令） |
-| 9 | 上传前门禁可自证范围 | 门禁输出的 pass 不得来自"被关掉的测试/未暂存的字节/没扫到的编码" | **已完成**（第八轮：三项阻塞修复 + 8 条判决性回归用例；`pp check` 10 项全绿） |
+| 8 | PC 可用 | Windows/macOS 上安装后本地可跑 | ✅ **已完成**（conda 环境 + `pp` 命令） |
+| 9 | 上传前门禁可自证范围 | 门禁输出的 pass 不得来自"被关掉的测试/未暂存的字节/没扫到的编码" | ✅ **已完成**（第八轮：三项阻塞修复 + 8 条判决性回归用例；`pp check` 10 项全绿） |
 
 ---
 
