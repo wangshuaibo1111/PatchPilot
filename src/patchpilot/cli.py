@@ -470,15 +470,29 @@ def eval_command(
     max_rounds: int = typer.Option(3, "--max-rounds", help="每题最多重试轮数"),
     out: Path | None = typer.Option(None, "--out", help="报告落盘路径（JSON）"),
     work_root: Path | None = typer.Option(None, "--work-root", help="工作目录（默认系统临时目录）"),
+    baseline: Path | None = typer.Option(
+        None, "--baseline", help="与基线比，退化则退出码 2（回归门禁）"
+    ),
+    write_baseline_to: Path | None = typer.Option(
+        None, "--write-baseline", help="把本次结果写成基线文件"
+    ),
+    strict_cost: bool = typer.Option(
+        False, "--strict-cost", help="成本/延时也阻塞（默认只提示，避免采样噪声误红）"
+    ),
 ) -> None:
     """**验收项 3/4**：跑评测集，输出 pass@1 + 成本 + P95，并落盘可复现报告。
 
     判定口径：`fail_to_pass` 修复前必须失败、修复后必须通过；`pass_to_pass` 前后都通过。
     修复前就绿的题会被标成 `invalid_task` 并从分母里排除（否则指标没有意义）。
+
+    **回归门禁**（验收项 5）：`--baseline eval/baseline.json` 会与基线逐项比对，
+    效果或成本退化时**退出码 2** 并打印指标 diff——这样"改坏 prompt"能让 CI 变红。
+    `--write-baseline` 用于在确认合格后刷新基线。
     """
     import tempfile
 
     from patchpilot.core.llm import build_llm
+    from patchpilot.eval.baseline import compare, load_baseline, write_baseline
     from patchpilot.eval.dataset import DatasetError, load_tasks
     from patchpilot.eval.runner import run_eval, write_report
 
@@ -543,6 +557,32 @@ def eval_command(
     target = out or (Path("eval") / "report.json")
     path = write_report(report, target)
     console.print(f"报告已写入 [bold]{path}[/bold]")
+
+    if write_baseline_to is not None:
+        written = write_baseline(report, write_baseline_to)
+        console.print(f"基线已写入 [bold]{written}[/bold]")
+
+    if baseline is not None:
+        try:
+            base_data = load_baseline(baseline)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=2) from exc
+        comparison = compare(report, base_data, strict_cost=strict_cost)
+        diff = Table(title=f"与基线对比：{baseline}")
+        diff.add_column("项目", style="bold")
+        diff.add_column("值")
+        diff.add_row("结论", "[green]无回归[/green]" if comparison.ok else "[red]检测到回归[/red]")
+        for regression in comparison.regressions:
+            diff.add_row(
+                regression.metric,
+                f"[red]{regression.baseline} → {regression.current}[/red]  {regression.detail}",
+            )
+        for note in comparison.notes:
+            diff.add_row("提示", note)
+        console.print(diff)
+        if not comparison.ok:
+            raise typer.Exit(code=2)
 
 
 @app.command()

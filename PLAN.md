@@ -42,7 +42,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | 🔧 **待收口**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**、**452 项单测全绿**；**残余**：`apply_patch` 路径安全的"git 清单为空"分支未经独立复审（按用户指示留待以后检查） |
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | 🔧 **已出数字（自建 FastEval 6 题）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0040**、总 token 9,200、平均 **10.8s**、**P95 15.1s**（`deepseek-flash`，温度 0，镜像 `patchpilot-sandbox:0.1.0-py312`）；**待做**：SWE-bench Lite 50 题（BenchEval），那才是论文级数字 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 🔧 **已实现**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；语料与评测集入库（`eval/corpus/` + `eval/fast.jsonl`），`pp eval` 一条命令可复跑 |
-| 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | 未开始（P5） |
+| 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
 | 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | 未开始（P6） |
 | 8 | PC 可用 | Windows/macOS 上安装后本地可跑 | **已完成**（conda 环境 + `pp` 命令） |
@@ -287,6 +287,41 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 5 完成**：回归门禁（改坏 prompt → CI 变红 + 指标 diff）
+
+- **新增**：
+  1. `src/patchpilot/eval/baseline.py` —— 基线对比。基线是**提交进版本库的数据**
+     （`eval/baseline.json`），由一次确认合格的运行产出；之后每次对比 `pass@1`、
+     成本、P95，并给出**逐题**得失（哪几题从通过变失败、哪几题新增通过）。
+  2. `pp eval --baseline PATH`（退化 → **退出码 2**）、`--write-baseline PATH`、`--strict-cost`。
+  3. `.github/workflows/ci.yml` —— 两道门禁：`gate`（`pp check` + 单测，无需密钥/Docker/网络，
+     必过）与 `eval-regression`（真模型 + 真沙箱跑基线对比，缺密钥时**显式跳过并告警**，
+     绝不假绿）。
+- **真机验证（本项的关键证据）**：
+  - 未改动 → 退出码 **0**、"无回归"；
+  - 把 prompt 从"只输出 unified diff"改成"不要输出任何 diff 或代码块"→
+    **pass@1 从 100% 掉到 50%**、退出码 **2**、diff 点名 `fast-003-wrong-exception` 等退化题。
+- **两次自我纠错（都很有价值）**：
+  1. **第一次改坏的方式没有效果**：改成"用散文解释"后 pass@1 仍是 100%——
+     因为 `extract_patch` 会从散文里把 ```diff 围栏抠出来。**教训**：验证门禁的
+     "改坏"必须真的掐断被判定的信号，否则测的是自己的想象。
+  2. **门禁误报**：还原源码后复跑仍判红（成本 0.004268 → 0.005673，+33% 超过当时 30% 容差）。
+     根因是**采样噪声**（这次模型多转了几轮），不是回归。**修法**：`pass@1` 才是唯一
+     默认阻塞项；成本/延时默认**只提示不阻塞**（容差放宽到 100%，`--strict-cost` 可收紧）。
+     一个在未改动代码上也会变红的门禁，维护者会很快学会忽略它。
+  3. 顺带修掉：`--limit` 子集运行会把"没跑"的题算成"退化"（假的丢失）——
+     改为**只在本次真正跑过的题目范围内**做逐题对比，并提示"对比不完整"。
+- **文件**：`src/patchpilot/eval/baseline.py`（新增）、`src/patchpilot/cli.py`、
+  `eval/baseline.json`（新增）、`.github/workflows/ci.yml`（新增）、
+  `tests/test_baseline.py`（新增 11 例）、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **506 passed + 4 skipped**，0 failed / 0 error
+  - 真机演示 `.tmp/demo_regression_gate2.py` → **PASS**（未改动绿 / 改坏红）
+  - CI 工作流 YAML 已解析验证（2 个 job、步骤齐全）
+- **审查**：按用户指示的节拍，留待以后与该验收项一并复审
+- **提交**：见本批提交
 
 ### [2026-10-17] **验收项 6 完成**：全链路可观测（四类 span + `pp trace` 回放）
 

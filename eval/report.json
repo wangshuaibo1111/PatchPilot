@@ -12,7 +12,7 @@
       "fast-005-topn-reversed",
       "fast-006-none-handling"
     ],
-    "commit": "2c36a3bc14fe4ccb688a6237d0954c0948c2b951",
+    "commit": "5100a1dc641010ee05eec47b3761ac497c26c310",
     "python": "3.12.15",
     "max_rounds": 3,
     "note": "pass@1 = passed / valid；valid 排除了 invalid_task（fail_to_pass 在修复前即为绿的题）。P95 在样本 < 5 时退化为最大值。"
@@ -22,10 +22,10 @@
     "valid": 6,
     "passed": 6,
     "pass@1": 1.0,
-    "total_cost_usd": 0.002521,
-    "total_tokens": 5865,
-    "mean_latency_s": 8.87,
-    "p95_latency_s": 11.33,
+    "total_cost_usd": 0.004268,
+    "total_tokens": 9513,
+    "mean_latency_s": 11.87,
+    "p95_latency_s": 16.09,
     "failure_histogram": {
       "passed": 6
     }
@@ -36,72 +36,72 @@
       "status": "passed",
       "detail": "复核通过（3 个用例）",
       "rounds": 1,
-      "duration_s": 8.17,
+      "duration_s": 10.99,
       "prompt_tokens": 397,
-      "completion_tokens": 327,
-      "cost_usd": 0.00025575,
+      "completion_tokens": 763,
+      "cost_usd": 0.00051735,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-001-off-by-one-c87ccb\\patches\\patchpilot-fix-94ce26d6.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-001-off-by-one-67da3c\\patches\\patchpilot-fix-f1983bfe.diff"
     },
     {
       "task_id": "fast-002-mutable-default",
       "status": "passed",
       "detail": "复核通过（4 个用例）",
       "rounds": 1,
-      "duration_s": 11.33,
+      "duration_s": 16.09,
       "prompt_tokens": 479,
-      "completion_tokens": 1524,
-      "cost_usd": 0.00098625,
+      "completion_tokens": 2267,
+      "cost_usd": 0.00143205,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-002-mutable-default-f21f3f\\patches\\patchpilot-fix-5e580042.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-002-mutable-default-c17791\\patches\\patchpilot-fix-447ae5d9.diff"
     },
     {
       "task_id": "fast-003-wrong-exception",
       "status": "passed",
       "detail": "复核通过（3 个用例）",
-      "rounds": 1,
-      "duration_s": 8.4,
-      "prompt_tokens": 276,
-      "completion_tokens": 475,
-      "cost_usd": 0.00032639999999999996,
+      "rounds": 2,
+      "duration_s": 12.85,
+      "prompt_tokens": 755,
+      "completion_tokens": 1217,
+      "cost_usd": 0.0008434499999999999,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-003-wrong-exception-c39bcc\\patches\\patchpilot-fix-819dd3b5.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-003-wrong-exception-c7b1bb\\patches\\patchpilot-fix-ed2471a8.diff"
     },
     {
       "task_id": "fast-004-dict-iteration-mutation",
       "status": "passed",
       "detail": "复核通过（3 个用例）",
-      "rounds": 1,
-      "duration_s": 7.99,
-      "prompt_tokens": 274,
-      "completion_tokens": 354,
-      "cost_usd": 0.0002535,
+      "rounds": 2,
+      "duration_s": 13.27,
+      "prompt_tokens": 778,
+      "completion_tokens": 1214,
+      "cost_usd": 0.0008451000000000001,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-004-dict-iteration-mutation-fa6e1b\\patches\\patchpilot-fix-1b3bfb40.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-004-dict-iteration-mutation-2cee4e\\patches\\patchpilot-fix-96e0142f.diff"
     },
     {
       "task_id": "fast-005-topn-reversed",
       "status": "passed",
       "detail": "复核通过（5 个用例）",
       "rounds": 1,
-      "duration_s": 8.17,
+      "duration_s": 8.42,
       "prompt_tokens": 300,
-      "completion_tokens": 273,
-      "cost_usd": 0.00020879999999999998,
+      "completion_tokens": 258,
+      "cost_usd": 0.00019979999999999998,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-005-topn-reversed-6bcad3\\patches\\patchpilot-fix-36f565e3.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-005-topn-reversed-08e166\\patches\\patchpilot-fix-d4b06369.diff"
     },
     {
       "task_id": "fast-006-none-handling",
       "status": "passed",
       "detail": "复核通过（5 个用例）",
       "rounds": 1,
-      "duration_s": 9.16,
+      "duration_s": 9.6,
       "prompt_tokens": 491,
-      "completion_tokens": 695,
-      "cost_usd": 0.00049065,
+      "completion_tokens": 594,
+      "cost_usd": 0.00043004999999999996,
       "failure_kind": "none",
-      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-006-none-handling-f48256\\patches\\patchpilot-fix-cdc7e93a.diff"
+      "patch_path": "C:\\Users\\22856\\AppData\\Local\\Temp\\patchpilot-eval\\fast-006-none-handling-1c45bd\\patches\\patchpilot-fix-a8fb36e2.diff"
     }
   ]
 }

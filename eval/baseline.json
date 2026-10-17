@@ -1,0 +1,24 @@
+{
+  "dataset": "fast_corpus.json",
+  "pass@1": 1.0,
+  "valid": 6,
+  "total_cost_usd": 0.004268,
+  "mean_latency_s": 11.87,
+  "p95_latency_s": 16.09,
+  "passed_tasks": [
+    "fast-001-off-by-one",
+    "fast-002-mutable-default",
+    "fast-003-wrong-exception",
+    "fast-004-dict-iteration-mutation",
+    "fast-005-topn-reversed",
+    "fast-006-none-handling"
+  ],
+  "failed_tasks": [],
+  "meta": {
+    "temperature": 0.0,
+    "model": "deepseek-flash",
+    "image": "patchpilot-sandbox:0.1.0-py312",
+    "commit": "5100a1dc641010ee05eec47b3761ac497c26c310",
+    "max_rounds": 3
+  }
+}

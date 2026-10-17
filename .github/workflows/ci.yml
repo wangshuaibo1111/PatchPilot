@@ -1,26 +1,99 @@
-name: ci
+name: CI
+
+# 两道门禁（对应验收项 5：回归门禁生效）
+#
+#   1. `gate`（**必然执行、无需任何密钥**）：`pp check` 十项确定性检查 + 全部单测。
+#      这一步不需要 Docker、不需要网络、不需要 API Key，所以任何 PR 都必须过。
+#   2. `eval-regression`（**需要密钥**）：真模型 + 真 Docker 跑 `pp eval --baseline`，
+#      与提交在库里的 `eval/baseline.json` 比，pass@1 退化即失败。
+#      没配 secret 时整步跳过，而不是静默通过——故意改坏的 prompt 会在这一步变红。
+#
+# 为什么把 eval 单独成 job：它要拉镜像、要真实 token、单次几十秒到几分钟，
+# 放在必过路径上会让每次提交都变慢；但它**必须存在**，否则"效果退化"无人拦。
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   gate:
+    name: 确定性门禁（pp check + 单测）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: 安装依赖
-        run: python -m pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
 
-      # 与本地 pp check 使用同一套确定性门禁，避免"本地过了 CI 挂了"
-      - name: 确定性门禁（语法 / ruff / pytest / 密钥扫描 / gitignore）
-        run: python -m patchpilot.cli check --json
+      - name: pp check（10 项确定性检查 + TREE_DIGEST）
+        run: python -m patchpilot.cli check --json | tee /tmp/check.json
 
-      - name: 骨架冒烟
-        run: python -m patchpilot.cli smoke
+      - name: 单测
+        run: pytest -q
+
+      - name: 保存门禁结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pp-check
+          path: /tmp/check.json
+
+  eval-regression:
+    name: 评测回归门禁（真模型 + 沙箱，需密钥）
+    runs-on: ubuntu-latest
+    needs: gate
+    # 没有密钥时**跳过**而不是假绿
+    if: ${{ github.event_name != 'pull_request' || vars.PP_EVAL_ENABLED == '1' }}
+    env:
+      PP_LLM_PROVIDER: deepseek
+      PP_LLM_BASE_URL: https://api.deepseek.com
+      PP_LLM_API_KEY: ${{ secrets.PP_LLM_API_KEY }}
+      PP_LLM_MODEL: deepseek-flash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,llm]"
+
+      - name: 构建沙箱镜像
+        run: docker build -t patchpilot-sandbox:0.1.0-py312 docker/sandbox
+
+      - name: 缺少密钥则跳过（不假绿）
+        id: precheck
+        run: |
+          if [ -z "${PP_LLM_API_KEY}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 PP_LLM_API_KEY，评测回归门禁被跳过"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: pp eval --baseline（pass@1 退化 → 退出码 2 → CI 变红）
+        if: steps.precheck.outputs.skip == 'false'
+        run: python -m patchpilot.cli eval --baseline eval/baseline.json --out eval/report.json
+
+      - name: 保存评测报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pp-eval-report
+          path: eval/report.json
+          if-no-files-found: ignore
