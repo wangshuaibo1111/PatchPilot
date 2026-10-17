@@ -44,7 +44,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 🔧 **已实现**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；语料与评测集入库（`eval/corpus/` + `eval/fast.jsonl`），`pp eval` 一条命令可复跑 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
-| 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | 未开始（P6） |
+| 7 | 一键部署 | `docker compose up` 起 Web 面板，浏览器看轨迹回放 | ✅ **已完成（真机验证）**：`pp serve` 起只读面板（`/` 单页 + `/api/traces`、`/api/traces/{id}`、`/api/evals`、`/api/health`）；`docker-compose.yml` 增加 `panel` 服务（`docker/app/Dockerfile`，**零前端构建**、trace 与评测产物只读挂载、带 HEALTHCHECK）。**实测**：镜像构建成功（237MB）、容器起来后读到宿主的真实 trace（`{"traces":1}`）、首页含轨迹与 span 时间线、`/api/evals` 返回 pass@1 指标、`docker compose config` 校验通过（4 个服务） |
 | 8 | PC 可用 | Windows/macOS 上安装后本地可跑 | **已完成**（conda 环境 + `pp` 命令） |
 | 9 | 上传前门禁可自证范围 | 门禁输出的 pass 不得来自"被关掉的测试/未暂存的字节/没扫到的编码" | **已完成**（第八轮：三项阻塞修复 + 8 条判决性回归用例；`pp check` 10 项全绿） |
 
@@ -287,6 +287,41 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 7 完成**：一键部署 + Web 轨迹回放面板
+
+- **新增**：
+  1. `src/patchpilot/api/app.py` —— FastAPI 只读面板。端点：
+     `/`（单页）、`/api/traces`（列表摘要）、`/api/traces/{id}`（含全部 span）、
+     `/api/evals`（评测指标）、`/api/health`（供部署脚本判断就绪）。
+  2. `pp serve` 命令（host/port/trace-dir/eval-report）。
+  3. `docker/app/Dockerfile` + `docker-compose.yml` 的 `panel` 服务：
+     trace 与评测产物**只读**挂载、HEALTHCHECK 探活、`restart: unless-stopped`。
+- **三个刻意的设计选择**：
+  1. **零前端构建**：面板是单个内联 HTML+JS 页面，没有 npm/打包步骤。
+     "一键部署"若需要先装 node 跑 build，就不叫一键了（并且镜像只有 237MB）。
+  2. **只读**：不提供任何执行入口——避免把"远程执行不可信代码"暴露到 Web 上。
+  3. **无状态**：两个数据源都是文件（`traces/*.jsonl` 与 `eval/report.json`），
+     面板重启不丢数据，也不需要数据库。
+- **真机验证**：
+  - `docker build -f docker/app/Dockerfile -t patchpilot-panel:0.1.0 .` → 成功（64s，237MB）；
+  - `docker run` 后用真实 HTTP 请求验证：`/api/health` → `{"ok":true,"traces":1}`（读到了宿主的真实 trace）、
+    `/api/traces` 返回 `eca95a80fa48432f`（就是 `pp run` 那次任务的 trace）、
+    `/api/evals` 返回 `pass@1` 等指标、`/` 返回 6607 字节页面且含"span 时间线"；
+  - `docker compose config` 校验通过，4 个服务（panel/postgres/qdrant/redis）。
+- **容错**（测试覆盖）：trace 目录不存在 → 空列表而非报错（首次部署就是这种状态）；
+  JSONL 坏行跳过；缺评测报告 → `available: false`；
+  未定价模型在面板上显式标"⚠成本不可信"，不显示成"一切正常"。
+- **文件**：`src/patchpilot/api/{__init__,app}.py`（新增）、`src/patchpilot/cli.py`、
+  `docker/app/Dockerfile`（新增）、`docker-compose.yml`、
+  `tests/test_panel_api.py`（新增 13 例）、`pyproject.toml`、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → 见本批冻结自证
+  - 13 例面板测试含**真起 uvicorn 子进程**用真 HTTP 请求验证（只测 TestClient 会漏掉
+    "uvicorn 起不来/参数拼错"）
+- **审查**：按用户指示的节拍，留待以后与该验收项一并复审
+- **提交**：见本批提交
 
 ### [2026-10-17] **验收项 5 完成**：回归门禁（改坏 prompt → CI 变红 + 指标 diff）
 

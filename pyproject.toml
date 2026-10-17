@@ -57,6 +57,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Typer 的 Option/Argument 按设计写在函数默认值位置
 "src/patchpilot/cli.py" = ["B008"]
+# 内联 HTML 模板里的 <script> 无法按 100 列折行（折了会改变字符串内容）
+"src/patchpilot/api/app.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

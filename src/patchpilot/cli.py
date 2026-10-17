@@ -657,5 +657,43 @@ def trace(
                 )
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="绑定地址"),
+    port: int = typer.Option(8000, "--port", help="端口"),
+    trace_dir: Path | None = typer.Option(None, "--trace-dir", help="trace 目录"),
+    eval_report: Path | None = typer.Option(
+        None, "--eval-report", help="评测报告 JSON（默认 eval/report.json）"
+    ),
+) -> None:
+    """**验收项 7**：起 Web 面板，在浏览器里回放任务轨迹、查看评测指标。
+
+    只读面板：不提供任何执行入口（避免把"远程执行不可信代码"暴露到 Web 上）。
+    `docker compose up` 会以本命令启动面板服务。
+    """
+    import tempfile
+
+    from patchpilot.api.app import create_app
+
+    directory = (
+        trace_dir or pathlib.Path(tempfile.gettempdir()) / "patchpilot-traces"
+    ).resolve()
+    report = (eval_report or (Path("eval") / "report.json")).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - 依赖缺失时的友好提示
+        console.print(
+            '[red]缺少 server 依赖：pip install -e ".[server]"[/red]'
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"面板地址 [bold]http://{host}:{port}[/bold]")
+    console.print(f"  trace 目录: {directory}")
+    console.print(f"  评测报告  : {report}（{'存在' if report.is_file() else '暂缺'}）")
+    uvicorn.run(create_app(trace_dir=directory, eval_report=report), host=host, port=port)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

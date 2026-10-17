@@ -1,9 +1,10 @@
-# PatchPilot 依赖服务
-# 启动：pp dev-up    停止：pp dev-down
+# PatchPilot 依赖服务 + 面板
+# 启动：docker compose up -d     停止：docker compose down
 #
 # 说明：Langfuse 观测栈（clickhouse + minio + langfuse-web）体量较大，
-# 计划在 P5 阶段以独立 profile 加入，避免 P0/P1 阶段拉取大量镜像。
-# 本阶段可观测性由 src/patchpilot/observability 输出 JSONL trace 承担。
+# 计划以独立 profile 加入，避免默认拉取大量镜像。
+# 当前的可观测性由 src/patchpilot/observability 输出 JSONL trace，
+# 再由 `panel` 服务（本文件最后的 app）在浏览器里回放。
 name: patchpilot
 
 services:
@@ -47,7 +48,26 @@ services:
     volumes:
       - qdrantdata:/qdrant/storage
 
+  # ---- 面板（验收项 7）----
+  # 只读服务：把宿主的 trace 目录与评测产物以**只读**方式挂进来，浏览器打开
+  # http://127.0.0.1:8000 即可回放轨迹、查看指标。
+  panel:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    image: patchpilot-panel:0.1.0
+    container_name: patchpilot-panel
+    ports:
+      - "8000:8000"
+    volumes:
+      # 宿主 trace 目录（pp run 产出）。Windows 主机默认在 %TEMP%\patchpilot-traces，
+      # 可用 PP_TRACE_DIR 覆盖；不存在时 compose 会创建空目录（面板显示"还没有 trace"）。
+      - ${PP_TRACE_DIR:-./.patchpilot/traces}:/data/traces:ro
+      - ${PP_EVAL_DIR:-./eval}:/data/eval:ro
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:
   qdrantdata:
+
