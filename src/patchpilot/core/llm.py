@@ -10,8 +10,11 @@ OpenAICompatibleLLM 覆盖 DeepSeek / 通义千问 / 任意 OpenAI 兼容端点�
 
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -167,3 +170,57 @@ def build_llm(settings: Settings, *, small: bool = False) -> LLMClient:
         timeout_s=settings.llm_timeout_s,
         price_overrides=settings.price_overrides,
     )
+
+
+# ---------------------------------------------------------------- 同步桥接
+
+
+_LOOP: asyncio.AbstractEventLoop | None = None
+_LOOP_LOCK = threading.Lock()
+
+
+def _shared_loop() -> asyncio.AbstractEventLoop:
+    """一个**常驻**事件循环（跑在后台守护线程里）。
+
+    为什么不能用 `asyncio.run`（P3 真机实测）：
+    `AsyncOpenAI` 内部持有 httpx 连接池，连接**绑定创建它的事件循环**。
+    每次调用都 `asyncio.run` 会建新循环、用完即关，第二次调用就会拿到
+    已关闭循环里的连接 → `LLMError: 模型调用失败: Event loop is closed`。
+    修复闭环要连续调用模型多轮，所以必须复用一个循环。
+    """
+    global _LOOP
+    with _LOOP_LOCK:
+        if _LOOP is None or _LOOP.is_closed():
+            loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=loop.run_forever, name="patchpilot-llm-loop", daemon=True
+            ).start()
+            _LOOP = loop
+        return _LOOP
+
+
+def run_sync(coro: Any) -> Any:
+    """在常驻循环里跑一个协程并等结果（可在同步代码里安全多次调用）。"""
+    loop = _shared_loop()
+    return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+
+def complete_sync(
+    llm: LLMClient,
+    messages: Sequence[ChatMessage],
+    *,
+    temperature: float = 0.0,
+    model: str | None = None,
+) -> LLMResponse:
+    """同步调用任意 `LLMClient`（图节点是同步的，模型客户端是异步的）。
+
+    - 若当前线程**没有**运行中的事件循环：走常驻循环（复用连接池）；
+    - 若已有运行中的循环（如在异步框架里被调用）：另起线程执行，避免嵌套。
+    """
+    coro = llm.complete(messages, temperature=temperature, model=model)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run_sync(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(run_sync, coro).result()

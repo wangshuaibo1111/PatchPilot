@@ -38,7 +38,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 
 | # | 验收项（Definition of Done） | 验证方式 | 状态 |
 |---|---|---|---|
-| 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | 未开始（P3） |
+| 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | 🔧 **已实现并真机跑通**：8 节点修复闭环（`graph/repair.py`）+ `pp run` 命令；**真机端到端（DeepSeek 真模型 + Docker 沙箱）在本地仓库上完成一次修复并通过测试**；待收口：多仓库泛化与失败率统计（P4 评测） |
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | 🔧 **待收口**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**、**452 项单测全绿**；**残余**：`apply_patch` 路径安全的"git 清单为空"分支未经独立复审（按用户指示留待以后检查） |
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | 未开始（P4） |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | 未开始（P4） |
@@ -126,7 +126,7 @@ D:\Code\PatchPilot\
 | **P0** | 工程骨架：工程配置、compose、状态机、checkpointer、CLI、CI、测试 | `pp smoke` 通过 + 全部单测通过 + `code-reviewer` 出具 APPROVE | ✅ **已完成并发布**：`0ad9ea8` 已推送 `origin/main`（第八轮 APPROVE，摘要 `ab1ce173…`）；4 条非阻塞项见最新日志 |
 | **P1** | 沙箱与工具：Docker 隔离、4 个 MCP Server、安全测试 | 沙箱跑 pytest 结构化返回；4 类安全用例全绿 | ✅ **已完成（验收项 2）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server**（fs/git/test/search，stdio 协议层已验证）+ 自建镜像 `patchpilot-sandbox:0.1.0-py312`；真机 Docker 端到端 **15/15**（网络/只读/非 root/内存 OOM/pids 熔断/超时清理） |
 | **P2** | 代码索引与检索：tree-sitter 符号表、三路召回、rerank | 定位集 Top-5 命中率有基线与消融表 | 未开始（可立即开工，不依赖 Docker） |
-| **P3** | 修复闭环：8 节点全图、真实模型、预算熔断 | 10 个真实 issue 端到端跑通 ≥3 个 | ⛔ 阻塞：`openai` 依赖未安装（`pip install -e ".[llm]"`）；API Key 已在 `.env` 配置并验活（`GET /models` 200，模型 `deepseek-flash`） |
+| **P3** | 修复闭环：8 节点全图、真实模型、预算熔断 | 10 个真实 issue 端到端跑通 ≥3 个 | 🔧 **进行中**：8 节点图（`graph/repair.py`）+ `pp run` 已落地，**真机端到端（DeepSeek 真模型 + Docker 沙箱）跑通 1 例**；`openai` 已装、Key 已验活；待做：10 个真实 issue 的批量跑通与统计（属 P4 评测） |
 | **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 未开始 |
 | **P5** | 观测与 CI 门禁：OTel/Langfuse、指标回归门禁 | 改坏 prompt → CI 变红并指出指标 | 未开始 |
 | **P6** | Web 面板与部署：轨迹回放、评测看板、一键 compose | 公网可访问 demo；PC 上 3 条命令跑通 | 未开始 |
@@ -287,6 +287,47 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 1 实现完成**：`pp run` 一条命令在本地仓库上完成一次修复
+
+- **背景**：按用户指示，验收项 2 以"存档提交（`0f5793f`）+ 待收口"收尾，直接转入下一项。
+  本批实现 **验收项 1**（`pp run --repo . --issue-file bug.md`），也就是 P3 的修复闭环。
+- **新增**：
+  1. `src/patchpilot/graph/repair.py` —— **8 节点修复闭环**：
+     `load_issue`（读 issue、抽检索词）→ `locate`（`tools.search` 找候选）→ `generate`
+     （模型产出 unified diff）→ `apply`（**只打在工作副本上**）→ `run_tests`
+     （Docker 沙箱跑 pytest，取 JUnit 结构化结果）→ `evaluate` → `reflect`
+     （失败用例压成记忆，供下一轮 prompt）→ `finalize`（落盘补丁 + 报告）。
+     路由含三条早停：定位失败、补丁打不上/解析不出、轮数或预算耗尽。
+  2. `pp run`（`cli.py`）—— 验收项 1 的命令行入口，输出轮数/候选/测试结果/归因/补丁路径。
+  3. **可测试性设计**：模型（`LLMClient`）与测试执行（`TestRunner`）/补丁应用
+     （`PatchApplier`）都是可注入协议，因此**整条图能离线端到端验证**；
+     真机版本另有一个用例（缺 openai/Key/Docker 自动 skip，不给门禁引网络依赖）。
+- **真机验证（本轮最有价值的一条）**：`tests/test_repair_e2e.py` 用**真 DeepSeek 模型 +
+  真 Docker 沙箱**在临时仓库上跑完整条链路——**修好了那个 bug 并且测试转绿**（耗时 75s），
+  同时断言"用户仓库一个字节都没被改"。这是本批首次让"模型 → 补丁 → 沙箱验证"闭环在真机上跑通。
+- **过程中修掉的 4 个真 bug**（都不是测试问题）：
+  1. **预算熔断永不触发**：`attempts` 没进 `RepairState`，而 `BudgetTracker.to_state()` 写这个键
+     ——LangGraph 不持久化它，`from_state` 每次从 0 开始，于是 `max_attempts` 形同虚设
+     （实测 `max_rounds=2` 跑了十几轮）。这是 P0 就埋下的同类问题的复发形态。
+  2. **`started_at=0.0` 导致第一个节点就熔断**：时长上限算出 1.3e6 秒的"已用时长"。
+  3. **`Event loop is closed`**：`AsyncOpenAI` 的连接池绑定创建它的事件循环，而图节点是同步的
+     ——原先每次 `asyncio.run` 建新循环、用完即关，**第二轮调用必崩**。
+     修法：`core/llm.py` 新增 `complete_sync` / `run_sync`（**常驻事件循环 + 后台守护线程**）。
+  4. **`_default_applier` 形参名与协议不一致**（`root` vs `workspace`）：真机第一次调用就抛
+     `TypeError`；而错误处理把 `workspace` 重置成 `"."`，**把这条信息掩盖成"补丁应用失败"**。
+     两处都修了（签名对齐 + 不再掩盖真实错误）。
+- **文件**：`src/patchpilot/graph/repair.py`（新增）、`src/patchpilot/core/llm.py`、
+  `src/patchpilot/cli.py`、`tests/test_repair_graph.py`（新增 15 例）、
+  `tests/test_repair_e2e.py`（新增，真机）、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -p no:cacheprovider -q -rA` → **468 passed + 4 skipped**，0 failed / 0 error（收集 472）
+  - **真机端到端** `tests/test_repair_e2e.py` → **1 passed**（DeepSeek + Docker 沙箱，
+    修好 bug 且测试转绿，用户仓库未被改动）
+  - `pp check --json` ×2 → 见本批冻结自证（摘要由审查者复算）
+- **审查**：按用户指示的节拍，本批**留待以后与该验收项一并复审**（不再逐批复审）
+- **提交**：见本批提交
 
 ### [2026-10-16] **验收项 2 完成**：沙箱驱动层 + 4 个 MCP server（P1 收口）
 

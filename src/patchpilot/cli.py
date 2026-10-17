@@ -384,5 +384,76 @@ def mcp_server(
     server.run()  # stdio 传输
 
 
+@app.command()
+def run(
+    repo: Path = typer.Option(Path("."), "--repo", help="待修复的本地仓库根"),
+    issue_file: Path = typer.Option(..., "--issue-file", help="issue 描述文件（markdown/文本）"),
+    tests: list[str] = typer.Option(
+        None, "--test", help="目标测试路径（可多次）；不传则跑整个套件"
+    ),
+    max_rounds: int = typer.Option(3, "--max-rounds", help="最多重试轮数"),
+    copy_root: Path | None = typer.Option(
+        None, "--copy-root", help="工作副本根（默认系统临时目录）"
+    ),
+) -> None:
+    """**验收项 1**：一条命令在任意本地仓库上完成一次修复。
+
+    流程：读 issue → 定位候选文件 → 模型产出补丁 → 打到**副本**（绝不改用户仓库）
+    → 沙箱跑测试 → 失败则带记忆重试 → 产出补丁文件与报告。
+
+    需要 Docker（沙箱测试）与可用模型（`PP_LLM_PROVIDER` + `PP_LLM_API_KEY`）。
+    """
+    import tempfile
+
+    from patchpilot.core.llm import build_llm
+    from patchpilot.graph.repair import RepairOptions, run_repair
+    from patchpilot.sandbox.policy import SandboxPolicy
+
+    settings: Settings = get_settings()
+    configure_logging(settings)
+
+    resolved_repo = repo.resolve()
+    if not resolved_repo.is_dir():
+        raise typer.BadParameter(f"--repo 必须是已存在的目录: {resolved_repo}")
+    if not issue_file.is_file():
+        raise typer.BadParameter(f"--issue-file 不存在: {issue_file}")
+    if settings.llm_provider == "stub":
+        console.print("[yellow]提示：PP_LLM_PROVIDER=stub，模型不会真的改代码。[/yellow]")
+
+    sandbox_root = (copy_root or Path(tempfile.gettempdir()) / "patchpilot-sandbox").resolve()
+    sandbox_root.mkdir(parents=True, exist_ok=True)
+    base_policy = SandboxPolicy(sandbox_root=sandbox_root)
+    options = RepairOptions(
+        repo=resolved_repo,
+        issue_file=issue_file.resolve(),
+        tests=tuple(tests or ()),
+        policy=base_policy,
+        budget=settings.budget(),
+        max_rounds=max_rounds,
+        copy_root=sandbox_root,
+    )
+
+    with console.status("修复中…"):
+        final = run_repair(options=options, llm=build_llm(settings))
+
+    table = Table(title="pp run 结果")
+    table.add_column("字段", style="bold")
+    table.add_column("值")
+    table.add_row("task_id", str(final.get("task_id", "")))
+    table.add_row("轮数", str(final.get("round", 0)))
+    table.add_row("候选文件", ", ".join(final.get("candidates", [])[:5]) or "<无>")
+    table.add_row("补丁字符数", str(len(final.get("patch", ""))))
+    table.add_row("测试通过", "是" if final.get("passed") else "否")
+    table.add_row("失败归因", str(final.get("failure_kind", "")))
+    table.add_row("预算熔断", str(final.get("budget_exceeded", "")) or "<未触发>")
+    table.add_row("补丁文件", str(final.get("final_patch_path", "")) or "<未产出>")
+    console.print(table)
+
+    if final.get("budget_exceeded"):
+        console.print(f"[yellow]预算终止：{final['budget_exceeded']}[/yellow]")
+    if not final.get("passed"):
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
