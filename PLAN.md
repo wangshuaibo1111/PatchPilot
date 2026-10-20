@@ -39,7 +39,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | # | 验收项（Definition of Done） | 验证方式 | 状态 |
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
-| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**（网络不可达 / rootfs 只读 / 非 root / 内存 OOM 熔断 / pids 超限 fork 被拒 / 超时截断且无残留）；逃逸面经六轮真机复审逐步收口（search 剪链接 / `git apply` 写穿 → **以 git 清单为准 + fail-closed**；再修 **stdin 编码侧**：补丁按字节喂 git，杜绝 CRLF 注入），变异自证 **13/13 KILLED**（2 条等价变异已登记）；**535 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
+| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**564 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、总 token 5,865、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**未做**：BenchEval（SWE-bench Lite 50 题）——那是论文级数字，需要外部数据集与更长预算 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
@@ -341,6 +341,38 @@ D:\Code\PatchPilot\
 - **审查**：按节拍，P2 属一个新阶段，留待与该阶段一并复审
 - **提交**：见本批提交
 
+### [2026-10-17] **验收项 2 关闭** + 第三类子进程 I/O 收口 + 两处"守卫无钉"
+
+- **复审结论**：`APPROVE`，验收项 2 的两项保证（沙箱安全边界、git 工具层路径/字节安全）
+  经**独立真机**验证在岗：junction 7/7 全拒、真机沙箱 **22/22**、真机 LF 仓库 **6/6**
+  （新建文件盘上字节严格 `b'alpha\nbeta\n'`）。
+- **它抓到了我点名要它查的"第三类"**：`sandbox/manager.py` 起 docker 时 `text=True` 无 `encoding`
+  ——cp936 下子进程输出含非法字节时 **`rc=0` 且 `stdout=None`**（reader 线程 UnicodeDecodeError
+  被吞），容器测试输出被静默清空。判定不受影响（`ok` = 退出码 + 落盘 JUnit），
+  只损可观测性，但这是同族缺陷里最难发现的一种。
+- **本轮修掉**：
+  1. `manager.py`（docker info / image inspect / 起容器）与 `cli.py`（docker info）
+     全部显式 `encoding="utf-8", errors="replace"`；
+  2. `manager.py`、`cli.py` 的 `proc.stdout.strip()` 补 `or ""`（否则诊断路径二次崩）；
+  3. `preflight.py` 的 `_run` 改为**整体字节模式**（`input=str` + text 模式会做换行翻译）。
+     注意：`text=True` 与字节 stdin **不能共存**——第一次改错就撞上
+     `TypeError: write() argument must be str`，必须整段切到字节再手动解码；
+  4. 语料路径包含校验：`EvalTask.materialize` 与 `locate_bench` 拒绝 `../` 逃逸；
+  5. 文档契约：`apply_patch` 写明**补丁行尾 = LF**（CRLF 补丁打 LF 文件刻意 fail-closed）；
+     `fs_server.write_file` 写明 **`\r\n` 原样保留**（旧 `write_text` 会变 `\r\r\n`）。
+- **两条"守卫无钉"已钉住**（复审用变异证明此前 SURVIVED）：
+  新增 `tests/test_byte_contracts.py`（13 例），**直接断言字节**而非"函数被调用过"：
+  `write_text_lf` 三个调用点各一条 `read_bytes()` 断言（fs 写文件 / 语料物化 / 闭环 `.diff`）
+  ＋"不翻译行尾"＋"保留调用方 CRLF"；`_git_env` 逐项断言（`GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`/
+  `GIT_CONFIG_NOSYSTEM`/`HOME`）＋"三处 git 调用必须共用它"；`docker_available` 在 `stdout=None`
+  时不崩 + encoding 结构断言。
+  **变异复核 3/3 KILLED**（`M-textio 退回 write_text` / `M-gitenv 清空隔离项` / `M-utf8 去掉 encoding`）。
+- **`_run_git` 的 `stdout is None` 分支**：按 §8.5 第 5 条**登记为冗余纵深防御**
+  （显式 encoding 使其结构上不可达，加 `# pragma: no cover` 与注释，**不计入覆盖**）。
+- **验证**：`ruff` 全绿；`pytest` 见本批冻结自证；变异 3/3 KILLED。
+- **审查**：第三十一轮 **APPROVE**
+- **提交**：见本批提交
+
 ### [2026-10-17] **P2 补齐向量通道**：+ 新消融表（8 组）与两处真问题
 
 - **为什么补**：P2 首版只做了符号 / BM25 / 调用图三路，**"代码向量"这一路缺失**，
@@ -473,9 +505,11 @@ D:\Code\PatchPilot\
   **判据**：改 LF 文件成功 / 删 LF 文件成功 / 新建文件盘上字节严格 `\n` /
   清单道与 apply 看到同一份补丁；变异 **M-I（退回 text 模式）与 M-K（绕过 stdin）双双 KILLED**。
 - **§8.5 追加登记（等价变异）**：`_run_git_with_stdin` 里 `(bytes).decode()` 与
-  `.decode("utf-8")` **行为等价**（后者默认即 UTF-8），唯一差异是不带参数时 `errors=strict`。
-  要区分二者需让 git 输出**非法 UTF-8 字节**（Windows 上无法造），故登记为等价变异，
-  不计为覆盖缺口。
+  `.decode("utf-8")` **行为等价**（后者默认即 UTF-8），唯一差异是 `errors`：
+  显式写 `"replace"` 时非法字节被替换，省略时按 `strict` **抛异常**。
+  要区分二者需让 git 输出**非法 UTF-8 字节**（Windows 上无法造），故登记为等价变异。
+  安全性上仍 fail-closed：两条调用链（`eval/runner.py`、`graph/repair.py`）
+  都对异常做了统一捕获。
 - **文件**：`src/patchpilot/tools/git_server.py`、`tests/test_tools.py`、`PLAN.md`
 - **验证**：
   - `ruff check src tests` → All checks passed

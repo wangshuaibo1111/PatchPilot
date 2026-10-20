@@ -263,14 +263,14 @@ def _run(
         **dict(extra_env or {}),
     }
     try:
+        # **整体字节模式**：`text=True` 与字节 stdin 不能共存，而写侧必须是字节
+        # （`input=str` + text 模式会按 `os.linesep` 把 `\n` 翻成 `\r\n`，
+        # 与本轮修掉的那处 git stdin 缺陷同族）。读侧随后显式 UTF-8 解码。
         proc = subprocess.run(
             cmd,
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            input=stdin,
+            input=stdin.encode("utf-8") if isinstance(stdin, str) else stdin,
             timeout=timeout_s,
             check=False,
             env=env,
@@ -281,7 +281,9 @@ def _run(
         return 124, f"超时（{timeout_s}s）"
     except OSError as exc:
         return 126, f"执行失败: {exc}"
-    return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+    stdout = (proc.stdout or b"").decode("utf-8", "replace")
+    stderr = (proc.stderr or b"").decode("utf-8", "replace")
+    return proc.returncode, (stdout + stderr).strip()
 
 
 def _rel(root: Path, path: Path) -> str:

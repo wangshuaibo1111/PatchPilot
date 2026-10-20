@@ -76,7 +76,12 @@ def docker_available() -> tuple[bool, str]:
         proc = subprocess.run(
             ["docker", "info", "--format", "{{.ServerVersion}}"],
             capture_output=True,
+            # 显式 UTF-8：`text=True` 不带 encoding 时按**本地代码页**解码，
+            # 输出含非法字节会让 reader 线程抛错并静默得到 `stdout is None`
+            # （第三十一轮 cp936 实测：`rc=0` 而 stdout 为 None）。
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=25,
             check=False,
         )
@@ -84,13 +89,18 @@ def docker_available() -> tuple[bool, str]:
         return False, f"docker 不可用：{type(exc).__name__}"
     if proc.returncode != 0:
         return False, "docker 守护进程不可达"
-    return True, proc.stdout.strip()
+    return True, (proc.stdout or "").strip()
 
 
 def image_available(image: str) -> bool:
     """本地是否已有该镜像（**刻意不自动 pull**，避免给门禁引入网络依赖）。"""
     proc = subprocess.run(
-        ["docker", "image", "inspect", image], capture_output=True, text=True, check=False
+        ["docker", "image", "inspect", image],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     return proc.returncode == 0
 
@@ -163,7 +173,18 @@ def run_in_sandbox(
     started = time.perf_counter()
     timed_out = False
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=effective_timeout)
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            # 容器里测试输出的编码不可控；不显式指定时在 cp936 上会解码失败，
+            # 于是 `rc=0` 但 `stdout` 静默变 None（本轮实测复现）。
+            # 判定本身不依赖 stdout（`SandboxResult.ok` 看退出码 + 落盘 JUnit），
+            # 所以过去只是"可观测性丢失"，但那是同族缺陷里最难发现的一种。
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=effective_timeout,
+        )
         exit_code = proc.returncode
         stdout, stderr = proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired as exc:

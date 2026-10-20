@@ -178,8 +178,14 @@ def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
         raise GitError(
             f"git {argv[0]} 失败（rc={proc.returncode}）: {(proc.stderr or '').strip()[:300]}"
         )
-    if proc.stdout is None:
-        # 与 `_files_git_would_write` 同口径：输出不可用 = 无法信任 = 拒绝
+    if proc.stdout is None:  # pragma: no cover - 见下
+        # 与 `_files_git_would_write` 同口径：输出不可用 = 无法信任 = 拒绝。
+        #
+        # **§8.5 登记（第三十一轮复审指出）**：本分支在**当前实现下不可达**——
+        # 上面显式给了 `encoding="utf-8", errors="replace"`，`stdout` 结构上必为 str；
+        # 删掉它也全套通过（复审实测 SURVIVED）。
+        # 保留它是纵深防御：一旦有人去掉 encoding（回归），这里会以可读错误收场，
+        # 而不是让 `None` 流到调用方变成 `AttributeError`。**不计入覆盖**。
         raise GitError(f"git {argv[0]} 未产生可读输出（解码失败？）")
     return proc.stdout
 
@@ -239,6 +245,12 @@ def apply_patch(root: Path, patch: str, *, check_only: bool = False) -> str:
     """把 unified diff 应用到工作区。
 
     - `check_only=True` 时只做 `--check`（不落盘），供 Agent 先验证补丁可应用；
+    - **补丁行尾契约：LF**。补丁按字节喂给 git（不做平台换行翻译），
+      因此拿 CRLF 行尾的补丁去打 LF 文件会得到 `patch does not apply`——
+      这是**刻意 fail-closed**：静默把行尾改掉才是更糟的结果
+      （第三十轮真机就踩过：`
+` 被翻成 `
+` 后 LF 仓库打不上、新建文件静默变 CRLF）；
     - 补丁里每个路径 token 都过**两道**校验（文本 + 解析）：见 `_patch_touches_outside`。
 
     **为什么必须有"解析"这道**（第二十五轮真机逃逸）：`git apply` 会**穿过 junction**

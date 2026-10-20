@@ -60,13 +60,31 @@ class EvalTask:
         """把题目内容写进 `destination`，返回 `(repo 根, issue 文件路径)`。
 
         内联语料就地展开；外部语料返回它的真实路径。
+
+        **路径必须落在 `destination` 之内**（第三十一轮复审点出）：语料里的相对路径
+        会被直接拼到目标目录，`{"../x": ...}` 就能写到目录之外。语料是入库数据而非
+        模型输出，风险低，但"按项目自己的口径做解析级包含校验"的成本几乎为零，
+        不该留一个与其余代码不一致的例外。
         """
         if self.files:
             destination.mkdir(parents=True, exist_ok=True)
+            base = destination.resolve()
             for rel, content in self.files.items():
-                write_text_lf(destination / rel, content)
-            issue_rel = self.raw.get("issue_file") or "Issue.md"
-            return destination, destination / str(issue_rel)
+                target = (destination / rel).resolve()
+                try:
+                    target.relative_to(base)
+                except ValueError as exc:
+                    raise DatasetError(
+                        f"{self.id}: 语料路径逃逸出目标目录: {rel!r}"
+                    ) from exc
+                write_text_lf(target, content)
+            issue_rel = str(self.raw.get("issue_file") or "Issue.md")
+            issue_path = (destination / issue_rel).resolve()
+            try:
+                issue_path.relative_to(base)
+            except ValueError as exc:
+                raise DatasetError(f"{self.id}: issue 路径逃逸: {issue_rel!r}") from exc
+            return destination, issue_path
         if self.repo is None or self.issue_file is None:
             raise DatasetError(f"{self.id}: 既没有 files 也没有 repo")
         return self.repo, self.issue_file

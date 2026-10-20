@@ -108,8 +108,15 @@ def cases_from_corpus(corpus_path: Path, *, keep_dirs: bool = False) -> list[Loc
         if not expected:
             continue
         root = Path(tempfile.mkdtemp(prefix=f"pp-loc-{item['id']}-"))
+        # 与 EvalTask.materialize 同口径：路径必须落在 root 之内（防 ../）
+        base = root.resolve()
         for rel, content in files.items():
-            write_text_lf(root / str(rel), str(content))
+            target = (root / str(rel)).resolve()
+            try:
+                target.relative_to(base)
+            except ValueError as exc:
+                raise ValueError(f"{item['id']}: 语料路径逃逸出目标目录: {rel!r}") from exc
+            write_text_lf(target, str(content))
         cases.append(
             LocateCase(
                 id=str(item["id"]),

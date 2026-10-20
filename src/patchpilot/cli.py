@@ -66,7 +66,11 @@ def _docker_daemon_status() -> tuple[bool, str]:
         proc = subprocess.run(
             ["docker", "info", "--format", "{{.ServerVersion}}"],
             capture_output=True,
+            # 与 `sandbox/manager.py` 同口径：显式 UTF-8 + replace，
+            # 否则本地代码页解码失败会让 stdout 静默变成 None。
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=25,
             check=False,
         )
@@ -80,7 +84,7 @@ def _docker_daemon_status() -> tuple[bool, str]:
     if proc.returncode != 0:
         lines = [ln for ln in (proc.stderr or proc.stdout or "").splitlines() if ln.strip()]
         return False, lines[0].strip() if lines else f"docker info 退出码 {proc.returncode}"
-    return True, f"ServerVersion={proc.stdout.strip()}"
+    return True, f"ServerVersion={(proc.stdout or '').strip()}"
 
 
 def _run_compose(args: list[str]) -> None:

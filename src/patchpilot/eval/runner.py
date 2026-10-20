@@ -150,9 +150,15 @@ def _git_commit(path: Path) -> str:
     """当前代码版本（可复现性元数据）。失败时返回空串而不是抛错。"""
     try:
         proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False
+            ["git", "rev-parse", "HEAD"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
-        return proc.stdout.strip() if proc.returncode == 0 else ""
+        return (proc.stdout or "").strip() if proc.returncode == 0 else ""
     except OSError:
         return ""
 
