@@ -1,0 +1,34 @@
+{
+  "meta": {
+    "instances": [
+      "pallets__flask-4992",
+      "pallets__flask-5063"
+    ],
+    "images": [
+      "patchpilot-py312-deps:flask-pytest7"
+    ],
+    "note": "N 很小，只能当链路验证；并非论文级 pass@1。受限原因见 eval/swebench_subset.json 的 notes 与 PLAN。"
+  },
+  "metrics": {
+    "total": 2,
+    "valid": 2,
+    "passed": 1,
+    "pass@1": 0.5
+  },
+  "outcomes": [
+    {
+      "instance_id": "pallets__flask-4992",
+      "status": "passed",
+      "detail": "FAIL_TO_PASS 全绿（第 1 轮）",
+      "rounds": 1,
+      "cost_usd": 0.007466
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.021955
+    }
+  ]
+}

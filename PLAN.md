@@ -40,7 +40,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**564 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
-| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、总 token 5,865、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**未做**：BenchEval（SWE-bench Lite 50 题）——那是论文级数字，需要外部数据集与更长预算 |
+| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— `pass@1 = 1/2 = 50%`（`pallets__flask-4992` 1 轮修好、`5063` 补丁打不上），**N=2 仅链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
@@ -127,7 +127,7 @@ D:\Code\PatchPilot\
 | **P1** | 沙箱与工具：Docker 隔离、4 个 MCP Server、安全测试 | 沙箱跑 pytest 结构化返回；4 类安全用例全绿 | ✅ **已完成（验收项 2）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server**（fs/git/test/search，stdio 协议层已验证）+ 自建镜像 `patchpilot-sandbox:0.1.0-py312`；真机 Docker 端到端 **15/15**（网络/只读/非 root/内存 OOM/pids 熔断/超时清理） |
 | **P2** | 代码索引与检索：符号表、四路召回、rerank | 定位集 Top-5 命中率有基线与消融表 | ✅ **已完成**：`index/` 符号索引（`ast` + 非 Python 近似规则）+ BM25 + **词法哈希向量** + 调用图 + RRF 融合（含**每通道 top-K 截断**）+ 可解释重排；`pp locate` 一条命令出 8 组**消融表**。**39 题汇总 Top-1：基线 48.7% → 四路完整 69.2%（+20.5pp）**，Top-5 51.3% → 84.6%，MRR 0.500 → 0.768；三组分开报告（corpus 6 / synthetic 20 / history 13）。已接入修复闭环 `locate` |
 | **P3** | 修复闭环：8 节点全图、真实模型、预算熔断 | 10 个真实 issue 端到端跑通 ≥3 个 | 🔧 **进行中**：8 节点图（`graph/repair.py`）+ `pp run` 已落地，**真机端到端（DeepSeek 真模型 + Docker 沙箱）跑通 1 例**；`openai` 已装、Key 已验活；待做：10 个真实 issue 的批量跑通与统计（属 P4 评测） |
-| **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 未开始 |
+| **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 🔧 **FastEval 已完成** + **真实 SWE-bench 子集已通链路**（`pp swebench`，带准入标定门，N=2 得 1/2）；**待做**：50 题规模（受镜像与 Python 版本限制，见 §9） |
 | **P5** | 观测与 CI 门禁：OTel/Langfuse、指标回归门禁 | 改坏 prompt → CI 变红并指出指标 | 未开始 |
 | **P6** | Web 面板与部署：轨迹回放、评测看板、一键 compose | 公网可访问 demo；PC 上 3 条命令跑通 | 未开始 |
 | **P7** | 打磨产出：成本优化、ADR、评测报告、英文 README、视频 | 仓库可开源，README 首屏即指标 | 未开始 |
@@ -339,6 +339,43 @@ D:\Code\PatchPilot\
   - `pytest -o addopts=""` → **558 passed + 4 skipped**，0 failed / 0 error
   - `pp locate` → 消融表落盘 `eval/locate.json`
 - **审查**：按节拍，P2 属一个新阶段，留待与该阶段一并复审
+- **提交**：见本批提交
+
+### [2026-10-17] **SWE-bench 子集评测**：带准入标定门，真实 instance pass@1 = 1/2
+
+- **做了什么**：
+  1. 下载 `princeton-nlp/SWE-bench_Lite` test split（**300 instance / 12 仓库**，1.1 MB parquet）
+     并解析全部字段；
+  2. 新增 `src/patchpilot/eval/swebench.py`：克隆 → checkout base_commit → 打 `test_patch`
+     → 打候选补丁 → 沙箱（`--network none` + 只读根）跑 `FAIL_TO_PASS` → 计 pass@1；
+     含**准入标定 `calibrate()`** 与**裸测试名解析 `resolve_node_ids()`**；
+  3. 新增 `pp swebench`；prompt 复用闭环那条路（先 P2 定位器选候选文件再要 diff），
+     评的是**上线路径**；
+  4. 入库 `eval/swebench_subset.json`（**2 题** + 1 条剔除记录）与 `eval/swebench_report.json`。
+- **真实结果**：`pass@1 = 1/2 = 50%`
+  - `pallets__flask-4992`：**1 轮修好**（模型补上 TOML 支持，`test_config_from_file_toml` 转绿）；
+  - `pallets__flask-5063`：**候选补丁无法应用**（模型给的 diff 与当前文件不匹配）。
+  **N=2 只作链路验证**，报告里也写了这句。
+- **为什么只有 2 题（本轮最重要的发现，全部实测）**：
+  1. **镜像仓库不可用**：`docker.nju.edu.cn` 对 `python:3.9-slim` 返回 **403**，Docker Hub 超时
+     → 拿不到官方 per-instance 镜像（每题 1~2 GB），也**换不了基础镜像版本**
+     （本地只有 `python:3.12-slim`）。
+  2. **旧仓库不兼容 Python 3.12**：`sympy/sympy` 2017 年版执行
+     `from distutils.version import StrictVersion`，`distutils` 已在 3.12 移除 →
+     `ModuleNotFoundError`。想用 3.9 绕开，撞上的正是第 1 条的 403。
+  3. **依赖需按 instance 钉死**：flask 2.x 的测试用 `_pytest.monkeypatch.notset`
+     （pytest 8 已移除，钉 `7.4.4` 后 3 题里 2 题标定通过）；pylint 需特定 `astroid` 与 `toml`；
+     `psf/requests` 的 F2P 要连 httpbin，在 `--network none` 下必然失败。
+- **标定门（可信度来源）**：只有"gold patch 能让 FAIL_TO_PASS 从失败翻成通过"的题才进子集。
+  `pallets__flask-4045` 因此**被剔除**（flask 2.0 与当前 werkzeug 耦合），原因写进子集 JSON。
+- **结论**：链路是通的、可复跑的（`pp swebench` 一条命令 + 标定门 + 报告落盘）；
+  但"Lite 50 题 pass@1 ≥ 25%"在本环境**不可能达成**，需要"可访问的镜像仓库 + 多版本基础镜像"
+  或官方镜像直连。**如实登记，不做数字粉饰。**
+- **文件**：`src/patchpilot/eval/swebench.py`（新增）、`src/patchpilot/cli.py`、
+  `eval/swebench_subset.json`、`eval/swebench_report.json`、
+  `tests/test_swebench.py`（新增 10 例，离线测口径）、`PLAN.md`、`README.md`
+- **验证**：`ruff` 全绿；`pytest` 见本批冻结自证；`pp swebench` 真机复跑得同一结果。
+- **审查**：留待该阶段一并复审
 - **提交**：见本批提交
 
 ### [2026-10-17] **定位基准扩到 39 题**：三组报告 + 结论反转

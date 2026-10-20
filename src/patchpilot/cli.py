@@ -789,5 +789,94 @@ def locate(
         console.print(f"消融表已写入 [bold]{out}[/bold]")
 
 
+@app.command()
+def swebench(
+    subset: Path = typer.Option(
+        Path("eval/swebench_subset.json"), "--subset", help="已标定的 SWE-bench 子集 JSON"
+    ),
+    work_root: Path | None = typer.Option(None, "--work-root", help="克隆目录（默认系统临时目录）"),
+    rounds: int = typer.Option(1, "--rounds", help="每题最多尝试轮数"),
+    out: Path | None = typer.Option(None, "--out", help="报告落盘（JSON）"),
+) -> None:
+    """**真实 SWE-bench instance 评测**（带准入标定门）。
+
+    子集里的题都通过了标定：官方 gold patch 能让 `FAIL_TO_PASS` 从失败翻成通过。
+    本环境拿不到官方 per-instance 镜像（仓库 403 / Docker Hub 超时）且只能跑
+    Python 3.12，所以**能标定的题很少**，分数只作链路验证，不是论文级 pass@1。
+    """
+    import tempfile
+
+    from patchpilot.core.llm import ChatMessage, build_llm, complete_sync
+    from patchpilot.eval.swebench import (
+        SwebenchError,
+        build_repair_prompt,
+        evaluate,
+        load_subset,
+        prepare_repo,
+    )
+
+    settings: Settings = get_settings()
+    configure_logging(settings)
+    if settings.llm_provider == "stub":
+        console.print("[yellow]提示：PP_LLM_PROVIDER=stub，产出不会真的修代码。[/yellow]")
+    try:
+        instances = load_subset(subset)
+    except SwebenchError as exc:
+        console.print(f"[red]子集错误：{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    root = (work_root or Path(tempfile.gettempdir()) / "patchpilot-swebench").resolve()
+    llm = build_llm(settings)
+    payload = json.loads(subset.read_text(encoding="utf-8"))
+    pythonpath = str(payload.get("container_pythonpath") or "") or None
+
+    def propose(instance, attempt: int):  # noqa: ANN001, ANN202
+        from patchpilot.core.pricing import estimate_cost_usd
+        from patchpilot.graph.repair import extract_patch
+
+        repo_dir = prepare_repo(instance, root)
+        prompt, _located = build_repair_prompt(instance, repo_dir)
+        response = complete_sync(llm, [ChatMessage(role="user", content=prompt)])
+        patch = extract_patch(response.text)
+        cost = (
+            estimate_cost_usd(
+                response.model,
+                response.prompt_tokens,
+                response.completion_tokens,
+                settings.price_overrides,
+            )
+            or 0.0
+        )
+        return patch, cost
+
+    with console.status("跑 SWE-bench 子集…"):
+        report = evaluate(
+            instances, propose_patch=propose, work_root=root,
+            container_pythonpath=pythonpath, max_rounds=rounds,
+        )
+
+    table = Table(title="SWE-bench 子集结果")
+    table.add_column("instance", style="bold")
+    table.add_column("状态")
+    table.add_column("轮数", justify="right")
+    table.add_column("说明")
+    for outcome in report.outcomes:
+        style = "green" if outcome.passed else "red"
+        table.add_row(
+            outcome.instance_id,
+            f"[{style}]{outcome.status}[/{style}]",
+            str(outcome.rounds),
+            outcome.detail[:60],
+        )
+    console.print(table)
+    console.print(
+        f"[bold]pass@1 = {report.passed}/{report.valid} = {report.pass_at_1:.1%}[/bold]"
+        f"（N={len(report.outcomes)}，**仅链路验证**，非论文级数字）"
+    )
+    target = out or Path("eval/swebench_report.json")
+    write_text_lf(target, json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n")
+    console.print(f"报告已写入 [bold]{target}[/bold]")
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
