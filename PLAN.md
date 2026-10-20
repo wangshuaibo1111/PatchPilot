@@ -39,7 +39,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | # | 验收项（Definition of Done） | 验证方式 | 状态 |
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
-| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | 🔧 **待收口**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**、**452 项单测全绿**；**残余**：`apply_patch` 路径安全的"git 清单为空"分支未经独立复审（按用户指示留待以后检查） |
+| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**（网络不可达 / rootfs 只读 / 非 root / 内存 OOM 熔断 / pids 超限 fork 被拒 / 超时截断且无残留）；逃逸面经四轮真机复审逐步收口（search 剪链接 / `git apply` 写穿 → **以 git 清单为准 + fail-closed**），变异自证 **4/4 KILLED**；**523 项单测全绿** |
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、总 token 5,865、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**未做**：BenchEval（SWE-bench Lite 50 题）——那是论文级数字，需要外部数据集与更长预算 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
@@ -287,6 +287,74 @@ D:\Code\PatchPilot\
 ## 9. 变更日志
 
 格式：`### [日期] <阶段> <标题>` + 变更 / 文件 / 验证 / 审查 / 提交 五项。
+
+### [2026-10-17] **验收项 2 收口**：`apply_patch` 的 fail-closed 缺口
+
+- **背景**：前一轮把验收项 2 以"存档待收口"提交，登记的残余风险是
+  **"git 清单为空"分支未经独立复审**。本轮把它补掉。
+- **根因**：`_files_git_would_write` 在 `git apply --numstat` 失败时返回**空列表**，
+  于是两种截然不同的状态被混为一谈：
+  - "git 解析成功，且宣称不写任何文件"；
+  - "git 根本解析不了这条补丁"。
+  后者意味着**我们无法验证它会写到哪里**，此时静态校验（`_patch_touches_outside`）
+  成了唯一防线——而静态道已被"引号名"与"非 `a/b` 前缀"绕过过两轮。
+- **修法（三条 fail-closed）**：
+  1. `_files_git_would_write` 改为返回 `list[str] | None`，`None` = git 解析失败；
+  2. `apply_patch` 遇 `None` → **拒绝**（"无法枚举将要写的文件"）；
+  3. git 解析成功但清单为空、而补丁里**又声明了路径** → **拒绝**（自相矛盾）；
+  4. 逐文件解析级校验保留（第二道网）。
+- **变异自证（§8.5）**：4 条守卫逐条删除，**4/4 KILLED**。
+  其中一条一开始 **SURVIVED**（删掉"逐文件解析级校验"后全套仍绿）——
+  因为静态道也拦得住同样形态，两层重叠。按 §8.5 第 5 条**不能就此算"已钉住"**：
+  重叠≠第二层有用。于是补了一条**分层独立验证**用例
+  `test_git_list_layer_holds_even_when_static_layer_is_blind`：
+  把静态道人为致盲（`return None`），只留 git 清单道，验证它仍能拒绝 junction 写穿。
+  补完后 M-D 变 **KILLED**。
+- **未采用的方案（记录取舍）**：曾考虑"git 解析失败时直接放行、让真正的 apply 去报错"
+  （因为两者用同一个解析器）。否决理由：两者**选项集不同**
+  （`--numstat --summary` vs `--whitespace=nowarn --verbose`），且我无法穷举
+  两者行为差异；安全边界上"无法验证"就应拒绝，而不是赌"另一个入口也会失败"。
+- **第二十九轮 BLOCKING 修复（解码）**：`subprocess.run(..., text=True)` **未指定 encoding**，
+  于是按本地代码页解码 git 的 UTF-8 输出。在 cp936 机器上：
+  - 复审者环境：reader 线程抛 `UnicodeDecodeError` → **`stdout is None` 而 `rc=0`**
+    → 旧代码 `(proc.stdout or "")` 把它当"空清单" → 守卫 3 误拒**合法**补丁，
+    报错文案还是误导性的"不写任何文件"；
+  - 也就是说"无法验证"又一次被静默当成"已验证"，只是换了个成因。
+  **修法**：三处 `subprocess.run` 全部显式 `encoding="utf-8", errors="replace"`；
+  `stdout is None` 一律判为"无法枚举"→ `None`（fail-closed）；
+  并加 `-c core.quotePath=false` 让 git 直接输出**真实路径**（工具调用方需要真实名）。
+- **第二十九轮同时修的清单道盲区**：清单道此前只 `strip('"')`、**不做 C 反转义**，
+  而静态道做了。于是凡是 git 会引号化的名字（非 ASCII / 控制字符），清单道拿到的是
+  **不存在的路径**——"第二道网独立成立"只对 ASCII 名成立（复审实测 junction `J链`）。
+  修法：抽出 `_names_from_numstat` 统一做 C 反转义，还原失败 → `None`（fail-closed）；
+  并修掉 `--summary` 里 `create`/`delete` 行（**没有** `(NN%)` 后缀）被正则漏掉的形态；
+  同一文件同时出现在 numstat 行与 summary 行时**去重保序**。
+- **§8.5 登记（如实）**：
+  - `GitListError` 是死代码（全仓无 raise），**已删除**；
+  - 守卫 3（"git 说不写文件但补丁声明了路径"）**在生产路径上几乎不可达**：
+    复审构造了 10 种"声明了路径但 git 不列文件"的补丁，`--numstat` 全部 `rc=128`；
+    它唯一被观测到的触发者正是上面那条解码失效。修完解码后它近似为**纵深防御**，
+    保留是因为"两侧不一致就拒绝"是对的原则，且已有用例钉住它的行为；
+  - `_names_from_numstat` 的 C 反转义在 `core.quotePath=false` 下对非 ASCII 名是**冗余**
+    （git 已输出原始名），但一旦该配置被改动/遇到控制字符名就会成为唯一防线；
+    为让它可被钉住，已抽成独立函数并加**解析规则直测**（喂 git 的引号化输出）。
+- **已知边界（如实登记）**：`--numstat` 对**纯 mode 变更 / 二进制 / 空文件新建**等形态
+  本机 git 2.54 自己就拒绝（改前改后一致），"合法补丁防误伤 7 类"**不含**这三类。
+- **平台相关性的教训（写进来以免复发）**：解码类缺陷**依赖环境**——
+  本机 Python 的 subprocess 恰好按 UTF-8 解码，而复审者机器直接抛异常。
+  因此解码契约用**结构化断言**（检查调用点是否传了 `encoding`）钉住，
+  而不是写"复现旧缺陷"的行为断言（那种断言在部分机器上会假绿）。
+  全量套件在 **cp936 与 UTF-8 两种模式下各跑一遍**（各 532 passed / 4 skipped）。
+- **文件**：`src/patchpilot/tools/git_server.py`、`tests/test_tools.py`、`PLAN.md`
+- **验证**：
+  - `ruff check src tests` → All checks passed
+  - `pytest -o addopts=""` → **523 passed + 4 skipped**，0 failed / 0 error
+  - 真机 e2e（沙箱 4 类安全）→ **15/15**
+  - junction 形态矩阵 → **12/12**（越界全拒、根内全通过）
+  - junction 写穿复核 → **8/8**
+  - 合法补丁防误伤：改/新建/删除/重命名/多文件/引号名/非 `a/b` 前缀 **7 类全部 OK**
+- **审查**：本轮按新节拍属"完成一个验收项"，**随本批发起一次复审**
+- **提交**：见本批提交
 
 ### [2026-10-17] **验收项 7 完成**：一键部署 + Web 轨迹回放面板
 

@@ -144,10 +144,19 @@ def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
     }
     try:
         proc = subprocess.run(
-            ["git", *argv],
+            # `core.quotePath=false`：否则 git 会把非 ASCII 路径输出成
+            # `"\346\226\207.txt"` 这种八进制转义形式，而工具层调用方（Agent）
+            # 需要的是**真实路径**。控制字符仍会被 git 引号化，由调用方按需反转义。
+            ["git", "-c", "core.quotePath=false", *argv],
             cwd=root,
             capture_output=True,
+            # **必须显式指定 UTF-8**：git 输出的路径是 UTF-8，而 `text=True` 不带 encoding
+            # 时按**本地代码页**解码（本机 cp936）。非 ASCII 路径会让解码在 subprocess 的
+            # reader 线程里失败 → `proc.stdout is None` 但 `returncode == 0`，
+            # 于是"无法验证"被静默当成"已验证"（第二十九轮真机复现）。
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_s,
             env=env,
             check=False,
@@ -215,10 +224,21 @@ def apply_patch(root: Path, patch: str, *, check_only: bool = False) -> str:
     # **独立于"猜路径"的最后一道网**（第二十七轮结论）：
     # 文本/解析两道都在"我们理解 git 会怎么解析路径"这个前提上——而实测反复被
     # 引号名、非 a/b 前缀等形态绕过。这里改成**让 git 自己算**：
-    # 先用 `--check` + `--numstat` 让 git 列出它**将要写**的文件，
-    # 对 git 给出的这份真实清单逐个跑解析级校验；只有全部落在根内才真正落盘。
-    # 这样"我们的解析"与"git 的解析"不一致时，以 **git 的清单**为准（fail-closed）。
+    # 先跑 `git apply --numstat --summary`（只解析、不落盘）让 git 列出它**将要写**的文件，
+    # 对这份真实清单逐个跑解析级校验；只有全部落在根内才真正落盘。
     pending = _files_git_would_write(root, patch, env)
+    if pending is None:
+        # git 自己都解析不了 → 我们无法验证"它会写哪里" → 拒绝（fail-closed）。
+        # 第二十八轮登记的风险点：早先这种情况返回空列表，静态校验成了唯一防线。
+        raise GitError(
+            "无法让 git 枚举这条补丁将要写哪些文件（git 解析失败），为安全起见拒绝执行"
+        )
+    declared = _patch_paths(patch)
+    if not pending and declared:
+        # git 解析成功却说"不写任何文件"，而补丁里明明声明了路径 → 自相矛盾，拒绝
+        raise GitError(
+            f"git 报告该补丁不写任何文件，但补丁声明了 {len(declared)} 个路径，拒绝执行"
+        )
     for name in pending:
         if _path_escapes(root, name):
             raise GitError(f"git 报告将要写根之外的路径，拒绝执行: {name}")
@@ -229,6 +249,8 @@ def apply_patch(root: Path, patch: str, *, check_only: bool = False) -> str:
         input=patch,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         env=env,
         check=False,
@@ -385,32 +407,61 @@ def _path_escapes(root: Path, candidate: str) -> bool:
         return True
 
 
-def _files_git_would_write(root: Path, patch: str, env: dict[str, str]) -> list[str]:
+def _files_git_would_write(root: Path, patch: str, env: dict[str, str]) -> list[str] | None:
     """让 **git 自己**报告这条补丁将要写哪些文件（含 rename/copy 的目标）。
 
-    用 `git apply --numstat`（只解析、不落盘）：它输出的第三列是**解析后的目标路径**，
-    也就是 git 真正会去写的名字。这样就不必让我们的解析器去复刻 git 的路径语法
-    （引号 C 转义、`-p1` 剥段、rename/copy 目标……），**不会因为漏一种形态而失守**。
+    用 `git apply --numstat --summary`（只解析、不落盘）：输出的第三列是**解析后的
+    目标路径**，也就是 git 真正会去写的名字。这样就不必让我们的解析器去复刻 git 的
+    路径语法（引号 C 转义、`-p1` 剥段、rename/copy 目标……）。
+    实测印证：引号名 `"a/a.txt"` 与非 `a/b` 前缀 `x/a.txt` 都会被归一成 `a.txt`。
 
-    解析不出任何名字时返回**空列表**——但调用方在拿到空列表时会继续走
-    `_patch_touches_outside` 的静态校验，且 `git apply` 本身失败会 rc!=0；
-    这里刻意不把"空"当"安全"的充分条件（见 `apply_patch` 的 docstring）。
+    **返回 `None` 表示"无法枚举"**（而不是"没有文件要写"）。三种情况都归入 `None`：
+      1. git 解析失败（rc != 0）；
+      2. `proc.stdout is None`（**第二十九轮真机踩到**：`text=True` 不带 encoding 时按
+         本地代码页 cp936 解码 UTF-8 路径会失败，reader 线程报错 → stdout 为 None
+         而 rc 仍为 0。此时"无法验证"会被静默当成"已验证"，正是要堵的那个洞）；
+      3. 某个名字无法按 git 的 C 转义规则还原（无法还原 = 无法验证 = 拒绝）。
+
+    只有"git 解析成功、stdout 可读、名字全部还原"时才返回（可能为空的）清单。
+    空清单 + 补丁里声明了路径 → 自相矛盾，由调用方拒绝。
     """
     proc = subprocess.run(
-        ["git", "apply", "--numstat", "--summary", "-"],
+        # 同 `_run_git`：让 git 直接输出真实路径（不做八进制转义），
+        # 这样清单道拿到的就是它真的会去写的名字；控制字符名仍会被引号化，
+        # 下面用 `_unquote_c_style` 还原。
+        ["git", "-c", "core.quotePath=false", "apply", "--numstat", "--summary", "-"],
         cwd=root,
         input=patch,
         capture_output=True,
         text=True,
+        # 与 `_run_git` 同口径：git 输出的是 UTF-8，必须显式指定，
+        # 否则非 ASCII 路径会按本地代码页解码失败（详见 docstring 第 2 条）。
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         env=env,
         check=False,
     )
     if proc.returncode != 0:
-        # git 都解析不了的补丁：让后续真正的 apply 去报错（同样会 rc!=0）
-        return []
+        return None
+    if proc.stdout is None:
+        # 解码失败等异常：**无法枚举**，必须走 fail-closed，绝不能当成"空清单"
+        return None
+    return _names_from_numstat(proc.stdout)
+
+
+def _names_from_numstat(output: str) -> list[str] | None:
+    """把 `git apply --numstat --summary` 的输出解析成**真实路径**列表。
+
+    抽成独立函数是为了**能直接钉住解析规则**：`core.quotePath=false` 时 git 通常
+    直接输出原始路径，所以端到端用例很难触发"引号化"这一支；但这一支必须正确——
+    只要 git 的配置被改动、或遇到控制字符名，git 就会引号化（如 `"J\\301\\264/x"`），
+    此时不做 C 反转义就会拿一个**不存在的路径**去核对边界。
+
+    返回 `None` 表示有名字无法还原 —— 即"无法验证"，调用方须 fail-closed。
+    """
     names: list[str] = []
-    for line in (proc.stdout or "").splitlines():
+    for line in output.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -420,11 +471,31 @@ def _files_git_would_write(root: Path, patch: str, env: dict[str, str]) -> list[
             names.append(fields[2])
             continue
         match = re.search(
-            r"(?:rename|copy|create|delete)\s+(.+?)(?:\s+=>\s+(.+?))?\s*\(\d+%\)$", line
+            # `--summary` 有几种形态：
+            #   ` rename a.txt => renamed.txt (100%)` / ` copy ... (100%)`  ← 带相似度
+            #   ` create new.txt` / ` delete gone.txt`                      ← **没有**相似度
+            # 第二类早先被漏掉（正则要求 `(NN%)` 结尾）。虽然 `--numstat` 行通常也会
+            # 列出同一文件，但"漏一种形态"正是本模块反复踩过的坑，故一并覆盖。
+            r"(?:rename|copy)\s+(.+?)(?:\s+=>\s+(.+?))?\s*\(\d+%\)$"
+            r"|(?:create|delete)\s+(?:mode\s+\d+\s+)?(.+)$",
+            line,
         )
         if match:
             names.extend([g for g in match.groups() if g])
-    return [n.strip().strip('"') for n in names if n.strip()]
+
+    resolved: list[str] = []
+    for raw in names:
+        token = raw.strip()
+        if not token:
+            continue
+        unquoted = _unquote_c_style(token)
+        if unquoted is None:
+            return None  # 还原不了 → 无法验证 → fail-closed
+        # 去重（保序）：同一文件可能同时出现在 `--numstat` 行与 `--summary` 行
+        # （例如新建文件既有 `1 0 new.txt` 又有 `create new.txt`）。
+        if unquoted not in resolved:
+            resolved.append(unquoted)
+    return resolved
 
 
 def _patch_touches_outside(patch: str, root: Path) -> str | None:

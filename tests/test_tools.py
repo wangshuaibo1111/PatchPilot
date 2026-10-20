@@ -109,6 +109,102 @@ def test_git_status_log_diff(git_repo: Path) -> None:
     assert "README.md" in git_server.diff(git_repo, ["--name-only"])
 
 
+def test_numstat_names_are_unquoted_to_real_paths() -> None:
+    """**解析规则直测**：git 引号化的名字必须还原成真实路径。
+
+    为什么需要这条（第二十九轮）：`core.quotePath=false` 时 git 通常直接输出原始路径，
+    所以端到端用例几乎碰不到"引号化"这一支，于是"清单道不做 C 反转义"的变异会**存活**。
+    但这一支必须正确——一旦 git 配置被改动或遇到控制字符名，git 就会输出
+    `"J\\301\\264/victim.txt"`，不做反转义就等于拿一个**不存在的路径**去核对边界，
+    第二道网"假装在岗"（静态道能拦，故当时不逃逸，但独立性不成立）。
+
+    这里直接喂 git 的真实输出格式，把解析规则钉死。
+    """
+    # git 对非 ASCII 名输出的**UTF-8** 八进制转义形态（「链」= E9 93 BE = \351\223\276）
+    output = '1\t0\t"J\\351\\223\\276/victim.txt"\n create "J\\351\\223\\276/victim.txt"\n'
+
+    names = git_server._names_from_numstat(output)
+
+    assert names is not None, "可解析的输出不得返回 None"
+    assert "J链/victim.txt" in names, f"必须还原成真实路径，实际 {names}"
+    assert not any("\\351" in n for n in names), "不得残留八进制转义"
+
+
+def test_numstat_names_fail_closed_on_undecodable_quoting() -> None:
+    """无法还原的引号名 → `None`（无法验证即拒绝），不能当成"没有文件"。"""
+    output = '1\t0\t"bad\\qname.txt"\n'
+
+    assert git_server._names_from_numstat(output) is None
+
+
+def test_numstat_names_handle_plain_and_summary_lines() -> None:
+    """普通 numstat 行与 `--summary` 行（rename/copy/create/delete）都要能解析。"""
+    output = (
+        "1\t1\ta.txt\n"
+        "0\t0\trenamed.txt\n"
+        " rename a.txt => renamed.txt (100%)\n"
+        " create new.txt\n"
+        " delete gone.txt\n"
+    )
+
+    names = git_server._names_from_numstat(output)
+
+    assert names is not None
+    assert "a.txt" in names
+    assert "renamed.txt" in names
+    assert "new.txt" in names
+    assert "gone.txt" in names
+
+
+def test_git_subprocesses_always_specify_utf8_encoding(git_repo: Path) -> None:
+    """**结构化断言**：两处 `subprocess.run` 都必须显式传 `encoding="utf-8"`。
+
+    为什么不写成行为断言：git 在 `core.quotePath=false` 时直接把路径以原始 UTF-8 输出，
+    而 Windows 上 git 自己可能先转成本地代码页——于是"不传 encoding 会不会出错"
+    **取决于环境**（本机 cp936 下恰好能解码，复审者的机器上则 `stdout is None`）。
+    行为断言因此在某些机器上会假绿。
+
+    但**契约是确定的**：跨平台读 git 的路径输出必须显式 UTF-8。
+    所以这里直接钉住调用点，任何删掉 `encoding` 的改动都会变红。
+    """
+    import inspect
+
+    import patchpilot.tools.git_server as module
+
+    sources = {
+        "_run_git": inspect.getsource(module._run_git),
+        "_files_git_would_write": inspect.getsource(module._files_git_would_write),
+    }
+    for name, source in sources.items():
+        assert 'encoding="utf-8"' in source, f"{name} 的 subprocess 调用缺少显式 UTF-8 编码"
+        assert '"core.quotePath=false"' in source, (
+            f"{name} 未关闭 quotePath：非 ASCII 路径会被 git 输出成八进制转义形式，"
+            "工具层调用方拿到就不是真实路径"
+        )
+    assert git_repo  # 保持 fixture 使用（保证在真实仓库上下文里跑）
+
+
+def test_git_status_and_diff_handle_non_ascii_paths(git_repo: Path) -> None:
+    """`status` / `diff` 在**非 ASCII 文件名**下必须返回真实路径，而不是乱码或崩溃。
+
+    第二十九轮：`_run_git` 原先 `text=True` 不带 encoding，git 输出的 UTF-8 路径在
+    cp936 下解码失败（reader 线程抛 `UnicodeDecodeError`），于是 status/diff/log 的
+    输出要么缺失、要么是乱码——而工具层会把这些乱码当成真实路径去用。
+    这条用例在 cp936 环境下能钉住该缺陷（纯 ASCII 路径测不出来）。
+    """
+    (git_repo / "文.txt").write_text("HELLO\n", encoding="utf-8")
+
+    status_out = git_server.status(git_repo)
+
+    # `git diff` 只显示**已跟踪**的改动，所以先入索引再改内容
+    subprocess.run(["git", "add", "文.txt"], cwd=git_repo, check=True, capture_output=True)
+    (git_repo / "文.txt").write_text("HELLO-CHANGED\n", encoding="utf-8")
+    diff_out = git_server.diff(git_repo, ["--name-only"])
+
+    assert "文.txt" in status_out, f"status 必须含真实文件名，实际 {status_out!r}"
+    assert "文.txt" in diff_out, f"diff 必须含真实文件名，实际 {diff_out!r}"
+
+
 @pytest.mark.parametrize(
     "subcommand",
     ["push", "remote", "fetch", "pull", "clone", "config", "submodule", "clean", "reset"],
@@ -186,6 +282,8 @@ def test_git_apply_patch_cannot_write_through_a_directory_link(
             ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         created = result.returncode == 0
@@ -325,6 +423,8 @@ def test_git_apply_patch_rejects_every_escape_form(
             ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         created = result.returncode == 0
@@ -369,6 +469,206 @@ def test_git_apply_patch_allows_legitimate_in_root_patches(git_repo: Path) -> No
     assert (git_repo / "c.txt").exists()
 
 
+# ---------------------------------------------------------------- fail-closed（第二十八轮）
+
+
+def test_git_cannot_parse_patch_is_rejected(git_repo: Path) -> None:
+    """`git --numstat` 解析不了的补丁必须**拒绝**，而不是"让后面的 apply 去报错"。
+
+    这是第二十八轮登记的残余风险：早先 `_files_git_would_write` 在 git 解析失败时
+    返回**空列表**，于是"git 说没有文件要写"和"git 根本解析不了"混为一谈，
+    静态校验（`_patch_touches_outside`）成了唯一防线——
+    而静态道已被引号名 / 非 `a/b` 前缀绕过过两轮。
+
+    现在两者严格区分：`None`（解析失败）→ 必须拒绝。
+    """
+    import patchpilot.tools.git_server as module
+
+    original = module._files_git_would_write
+    try:
+        module._files_git_would_write = lambda *a, **k: None  # type: ignore[assignment]
+        with pytest.raises(ToolError) as excinfo:
+            git_server.apply_patch(
+                git_repo, "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-OLD\n+NEW\n"
+            )
+        assert "无法让 git 枚举" in str(excinfo.value)
+    finally:
+        module._files_git_would_write = original  # type: ignore[assignment]
+
+
+def test_git_reports_no_files_but_patch_declares_paths_is_rejected(git_repo: Path) -> None:
+    """git 解析成功却说"不写任何文件"，而补丁里明明声明了路径 → 自相矛盾，必须拒绝。
+
+    这种"两侧不一致"是最危险的状态：放行等于在未经验证的情况下落盘。
+    """
+    import patchpilot.tools.git_server as module
+
+    original = module._files_git_would_write
+    try:
+        module._files_git_would_write = lambda *a, **k: []  # type: ignore[assignment]
+        with pytest.raises(ToolError) as excinfo:
+            git_server.apply_patch(
+                git_repo, "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-OLD\n+NEW\n"
+            )
+        assert "不写任何文件" in str(excinfo.value)
+    finally:
+        module._files_git_would_write = original  # type: ignore[assignment]
+
+
+def test_files_git_would_write_distinguishes_failure_from_empty(git_repo: Path) -> None:
+    """两个返回值语义必须不同：`None` = 解析失败；`[]` = 成功且无文件。"""
+    import os
+
+    env = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": str(git_repo),
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+    good = git_server._files_git_would_write(
+        git_repo, "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-OLD\n+NEW\n", env
+    )
+    assert good == ["a.txt"], f"正常补丁应枚举出文件，实际 {good}"
+
+    bad = git_server._files_git_would_write(git_repo, "这不是补丁\n", env)
+    assert bad is None, f"git 解析失败必须返回 None（而不是空列表），实际 {bad}"
+    assert bad != [], "None 与 [] 必须可区分——这正是本轮的修复点"
+
+
+def test_files_git_would_write_treats_missing_stdout_as_unverifiable(git_repo: Path) -> None:
+    """`stdout is None`（解码失败等）必须判为**无法枚举** → `None`。
+
+    第二十九轮真机踩到：`text=True` 不带 encoding 时按本地代码页（cp936）解码 git 的
+    UTF-8 输出，reader 线程抛 `UnicodeDecodeError`，于是 **rc=0 但 stdout 不可用**。
+    旧代码用 `(proc.stdout or "")` 把它当成空清单 → "无法验证"被静默当成"已验证"，
+    进而由守卫 3 误拒**合法**补丁（错误信息还是"不写任何文件"，完全误导）。
+    """
+    import subprocess as sp
+
+    import patchpilot.tools.git_server as module
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = None
+        stderr = None
+
+    original = module.subprocess.run
+    try:
+        module.subprocess.run = lambda *a, **k: _FakeCompleted()  # type: ignore[assignment]
+        result = module._files_git_would_write(git_repo, "diff --git a/x b/x\n", {})
+    finally:
+        module.subprocess.run = original  # type: ignore[assignment]
+
+    assert result is None, f"stdout 不可用时必须返回 None，实际 {result}"
+    assert sp  # 保持导入可见
+
+
+def test_files_git_would_write_unquotes_c_style_names(git_repo: Path) -> None:
+    """git 引号化的名字必须**还原成真实路径**，否则清单道核对的是不存在的路径。
+
+    `core.quotePath=true`（默认）时 git 把非 ASCII 名输出成 `"\\346\\226\\207.txt"`
+    这种八进制转义形式。只 `strip('"')` 会得到乱码路径 →
+    清单道对非 ASCII 名的 junction 完全失效（静态道能拦，第二道网却"假装在岗"）。
+    """
+    import os
+
+    env = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": str(git_repo),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    patch = "--- /dev/null\n+++ b/文.txt\n@@ -0,0 +1 @@\n+HELLO\n"
+
+    listed = git_server._files_git_would_write(git_repo, patch, env)
+
+    assert listed == ["文.txt"], f"必须还原成真实路径 ['文.txt']，实际 {listed}"
+
+
+def test_non_ascii_legitimate_patch_applies(git_repo: Path) -> None:
+    """**防误伤**：新建非 ASCII 文件名必须能正常应用（本轮修复的正面用例）。
+
+    修复前在本机（cp936）这条会被守卫 3 误拒，报"git 报告该补丁不写任何文件"。
+    """
+    patch = "--- /dev/null\n+++ b/文.txt\n@@ -0,0 +1 @@\n+HELLO\n"
+
+    git_server.apply_patch(git_repo, patch)
+
+    assert (git_repo / "文.txt").read_text(encoding="utf-8").strip() == "HELLO"
+
+
+@pytest.mark.parametrize(
+    ("link_name", "label"),
+    [
+        ("linked", "ASCII 链接名"),
+        ("J链", "非 ASCII 链接名（git 会把它引号化 + 八进制转义）"),
+    ],
+)
+def test_git_list_layer_holds_even_when_static_layer_is_blind(
+    git_repo: Path, tmp_path: Path, link_name: str, label: str
+) -> None:
+    """**深防御分层验证**：把静态道人为致盲后，git 清单道必须独立挡住 junction 写穿。
+
+    为什么需要这条（§8.5 第 5 条）：实测把"逐文件解析级校验"删掉后**全套测试仍绿**
+    ——因为静态道（`_patch_touches_outside`）也拦得住同样的形态，两层重叠。
+    重叠本身是好事，但"重叠"不等于"第二层有用"：一旦静态道被将来的某种新形态绕过，
+    第二层必须真的在岗。
+
+    因此这里**显式把静态道置为致盲**（`return None`），只留 git 清单道，
+    验证它仍能拒绝写穿。这样任何删掉第二层的改动都会让本用例变红。
+
+    第二十九轮补充：**参数化非 ASCII 链接名**。此前只用 ASCII 名，
+    于是"git 清单道不做 C 反转义"这个盲区永远不会变红
+    （`J链` 会被 git 输出成 `"J\301\264/…"`，不做反转义就核对了一个不存在的路径）。
+    """
+    import os as _os
+
+    import patchpilot.tools.git_server as module
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "victim.txt"
+    victim.write_text("ORIGINAL\n", encoding="utf-8")
+    link = git_repo / link_name
+    created = False
+    if _os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        created = result.returncode == 0
+    if not created:
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+            created = True
+        except (OSError, NotImplementedError):
+            created = False
+    if not created:
+        pytest.skip(f"本平台无法创建 junction/symlink（{label}）")
+
+    original_static = module._patch_touches_outside
+    try:
+        # 静态道致盲：假装它什么也没发现
+        module._patch_touches_outside = lambda *a, **k: None  # type: ignore[assignment]
+        with pytest.raises(ToolError) as excinfo:
+            git_server.apply_patch(
+                git_repo,
+                f"--- a/{link_name}/victim.txt\n+++ b/{link_name}/victim.txt\n"
+                "@@ -1 +1 @@\n-ORIGINAL\n+OVERWRITTEN\n",
+            )
+        message = str(excinfo.value)
+        assert "根之外" in message, f"{label}: 应由 git 清单道拒绝，实际: {message}"
+    finally:
+        module._patch_touches_outside = original_static  # type: ignore[assignment]
+
+    assert victim.read_text(encoding="utf-8") == "ORIGINAL\n", f"{label}: 根外文件不得被改写"
+
+
 def test_git_apply_patch_rejects_rename_and_copy_through_a_link(
     git_repo: Path, tmp_path: Path
 ) -> None:
@@ -389,6 +689,8 @@ def test_git_apply_patch_rejects_rename_and_copy_through_a_link(
             ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         created = result.returncode == 0
@@ -659,6 +961,8 @@ def test_search_never_follows_directory_links(repo: Path, tmp_path: Path) -> Non
             ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         created = result.returncode == 0
@@ -695,6 +999,8 @@ def test_search_does_not_double_visit_an_inside_target_via_link(repo: Path) -> N
             ["cmd", "/c", "mklink", "/J", str(link), str(repo / "pkg")],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         created = result.returncode == 0
