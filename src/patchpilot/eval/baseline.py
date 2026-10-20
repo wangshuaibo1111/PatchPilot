@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from patchpilot.core.textio import write_text_lf
 from patchpilot.eval.runner import EvalReport
 
 #: 允许的**相对**劣化幅度。
@@ -98,10 +99,8 @@ def baseline_from_report(report: EvalReport) -> dict[str, Any]:
 
 
 def write_baseline(report: EvalReport, path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(baseline_from_report(report), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    write_text_lf(
+        path, json.dumps(baseline_from_report(report), ensure_ascii=False, indent=2) + "\n"
     )
     return path
 

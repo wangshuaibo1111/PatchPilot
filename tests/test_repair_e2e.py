@@ -37,6 +37,12 @@ ISSUE = (
     "看起来 `add` 的实现写错了，请修正它，使 `tests/test_calc.py::test_add` 通过。\n"
 )
 
+def write_lf(path: Path, text: str) -> None:
+    """写入严格 LF 的文件（`write_text` 在 Windows 上会翻成 CRLF）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+
+
 
 def _ready() -> tuple[bool, str]:
     settings = Settings()
@@ -64,8 +70,8 @@ pytestmark = pytest.mark.skipif(not READY, reason=f"真机端到端条件不足:
 def _make_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
-    (repo / "calc.py").write_text(BUGGY, encoding="utf-8")
-    (repo / "tests" / "test_calc.py").write_text(TEST, encoding="utf-8")
+    write_lf(repo / "calc.py", BUGGY)
+    write_lf(repo / "tests" / "test_calc.py", TEST)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)

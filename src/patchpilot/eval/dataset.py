@@ -27,6 +27,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from patchpilot.core.textio import write_text_lf
 from patchpilot.sandbox.policy import DEFAULT_IMAGE
 
 
@@ -63,9 +64,7 @@ class EvalTask:
         if self.files:
             destination.mkdir(parents=True, exist_ok=True)
             for rel, content in self.files.items():
-                target = destination / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                write_text_lf(destination / rel, content)
             issue_rel = self.raw.get("issue_file") or "Issue.md"
             return destination, destination / str(issue_rel)
         if self.repo is None or self.issue_file is None:

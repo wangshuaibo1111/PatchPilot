@@ -14,15 +14,27 @@ import pytest
 from patchpilot.tools import ToolError, fs_server, git_server, pytest_runner, search_server
 
 
+def write_lf(path: Path, text: str) -> None:
+    """写入**严格 LF** 的文件（不做平台换行翻译）。
+
+    为什么需要它（第二十九轮）：`Path.write_text` 在 Windows 上会把 `\n` 翻成 `\r\n`，
+    于是"夹具是 CRLF、补丁是 LF"两边一起错，**把 CRLF 注入 bug 完全掩盖了**
+    （实测 `write_text("# demo\\n")` → `b'# demo\\r\\n'`）。
+    所有会被 `git apply` 处理到的夹具都必须用这个函数，才能测出真实语义。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+
+
 @pytest.fixture()
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
     (root / "pkg").mkdir()
-    (root / "pkg" / "mod.py").write_text(
-        "def target_fn():\n    return 1\n\n\nclass Widget:\n    pass\n", encoding="utf-8"
+    write_lf(
+        root / "pkg" / "mod.py", "def target_fn():\n    return 1\n\n\nclass Widget:\n    pass\n"
     )
-    (root / "README.md").write_text("# demo\n", encoding="utf-8")
+    write_lf(root / "README.md", "# demo\n")
     return root
 
 
@@ -97,13 +109,15 @@ def git_repo(repo: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    # 关掉行尾转换：夹具是 LF、补丁也是 LF，两边必须一致（第二十九轮的教训）
+    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
     return repo
 
 
 def test_git_status_log_diff(git_repo: Path) -> None:
-    (git_repo / "README.md").write_text("# changed\n", encoding="utf-8")
+    write_lf(git_repo / "README.md", "# changed\n")
     assert "README.md" in git_server.status(git_repo)
     assert "init" in git_server.log(git_repo, 5)
     assert "README.md" in git_server.diff(git_repo, ["--name-only"])
@@ -164,24 +178,102 @@ def test_git_subprocesses_always_specify_utf8_encoding(git_repo: Path) -> None:
     **取决于环境**（本机 cp936 下恰好能解码，复审者的机器上则 `stdout is None`）。
     行为断言因此在某些机器上会假绿。
 
-    但**契约是确定的**：跨平台读 git 的路径输出必须显式 UTF-8。
-    所以这里直接钉住调用点，任何删掉 `encoding` 的改动都会变红。
+    但**契约是确定的**：跨平台读 git 的路径输出必须显式 UTF-8，
+    而**写 git 的 stdin 必须按字节**（`input=str` + `text=True` 会做换行翻译）。
+    所以这里直接钉住调用点，任何退化都会变红。
     """
     import inspect
 
     import patchpilot.tools.git_server as module
 
-    sources = {
-        "_run_git": inspect.getsource(module._run_git),
-        "_files_git_would_write": inspect.getsource(module._files_git_would_write),
-    }
-    for name, source in sources.items():
-        assert 'encoding="utf-8"' in source, f"{name} 的 subprocess 调用缺少显式 UTF-8 编码"
-        assert '"core.quotePath=false"' in source, (
-            f"{name} 未关闭 quotePath：非 ASCII 路径会被 git 输出成八进制转义形式，"
-            "工具层调用方拿到就不是真实路径"
+    run_git = inspect.getsource(module._run_git)
+    assert 'encoding="utf-8"' in run_git, "_run_git 读 stdout 缺少显式 UTF-8"
+    assert '"core.quotePath=false"' in run_git, "_run_git 未关闭 quotePath"
+
+    stdin_helper = inspect.getsource(module._run_git_with_stdin)
+    assert '.encode("utf-8")' in stdin_helper, (
+        "_run_git_with_stdin 必须把补丁按字节喂给 git（否则 Windows 上换行会被翻译成 CRLF）"
+    )
+    # 只看**代码行**（`text=True,` 带尾逗号），docstring 里提到该词不算
+    code_lines = [ln.strip() for ln in stdin_helper.splitlines()]
+    assert "text=True," not in code_lines, (
+        "_run_git_with_stdin 不能使用 text 模式：写方向会做换行翻译、读方向会按本地代码页解码"
+    )
+    assert '.decode("utf-8"' in stdin_helper, "_run_git_with_stdin 必须显式按 UTF-8 解码输出"
+
+    for name in ("apply_patch", "_files_git_would_write"):
+        source = inspect.getsource(getattr(module, name))
+        assert "input=patch" not in source, (
+            f"{name} 不得用 `input=patch` + text 模式喂 stdin，必须走 `_run_git_with_stdin`"
         )
-    assert git_repo  # 保持 fixture 使用（保证在真实仓库上下文里跑）
+    assert git_repo
+
+
+def test_git_apply_patch_preserves_lf_line_endings(git_repo: Path) -> None:
+    """**LF 语义回归**：补丁与落盘字节必须一致（第二十九轮 BLOCKING）。
+
+    此前的实现用 `input=patch` + `text=True` 喂 git，Windows 上 subprocess 会按
+    `os.linesep` 把每个 `\\n` 翻成 `\\r\\n`。后果是"静默错误结果"：
+
+      - 目标文件是 LF 时，git 在找带 CR 的上下文行 → `patch does not apply`，
+        **合法补丁被拒**（本仓库就是 `i/lf w/lf`）；
+      - 新建文件时补丁内容被写成 CRLF，函数却返回 ok → **静默改了行尾**。
+
+    这条用例守两面：修改 LF 文件必须成功、新建文件的盘上字节必须是 LF。
+    """
+    write_lf(git_repo / "lf.txt", "one\ntwo\nthree\n")
+    subprocess.run(["git", "add", "lf.txt"], cwd=git_repo, check=True, capture_output=True)
+
+    # 1) 修改 LF 文件：必须成功（旧实现在这里报 patch does not apply）
+    git_server.apply_patch(
+        git_repo,
+        "--- a/lf.txt\n+++ b/lf.txt\n@@ -1,3 +1,4 @@\n one\n-two\n+TWO\n+EXTRA\n three\n",
+    )
+    assert (git_repo / "lf.txt").read_bytes() == b"one\nTWO\nEXTRA\nthree\n"
+
+    # 2) 新建文件：盘上字节必须严格是 LF（旧实现会变成 CRLF）
+    git_server.apply_patch(
+        git_repo, "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+alpha\n+beta\n"
+    )
+    raw = (git_repo / "new.txt").read_bytes()
+    assert raw == b"alpha\nbeta\n", f"新建文件必须保持 LF，实际 {raw!r}"
+    assert b"\r\n" not in raw, "不得注入 CRLF"
+
+
+def test_git_apply_patch_can_delete_an_lf_file(git_repo: Path) -> None:
+    """删除 LF 文件的补丁也必须成功（旧实现同样因 CRLF 而失败）。"""
+    write_lf(git_repo / "gone.txt", "bye\n")
+    subprocess.run(["git", "add", "gone.txt"], cwd=git_repo, check=True, capture_output=True)
+
+    git_server.apply_patch(
+        git_repo, "--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n"
+    )
+
+    assert not (git_repo / "gone.txt").exists()
+
+
+def test_files_git_would_write_sees_the_same_patch_as_apply(git_repo: Path) -> None:
+    """清单道与真正 apply 必须看到**同一份补丁字节**（否则"以 git 为准"名不副实）。
+
+    旧实现两处都用 text 模式喂 stdin，虽然"一致地错"，但一旦只修其中一处，
+    枚举与落盘就会不一致。这里用 LF 补丁同时验证两处都能正确处理。
+    """
+    import os
+
+    write_lf(git_repo / "lf2.txt", "a\nb\n")
+    patch = "--- a/lf2.txt\n+++ b/lf2.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n"
+    env = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": str(git_repo),
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+    listed = git_server._files_git_would_write(git_repo, patch, env)
+    git_server.apply_patch(git_repo, patch)
+
+    assert listed == ["lf2.txt"], f"清单道必须能解析 LF 补丁，实际 {listed}"
+    assert (git_repo / "lf2.txt").read_bytes() == b"a\nB\n"
 
 
 def test_git_status_and_diff_handle_non_ascii_paths(git_repo: Path) -> None:
@@ -192,7 +284,7 @@ def test_git_status_and_diff_handle_non_ascii_paths(git_repo: Path) -> None:
     输出要么缺失、要么是乱码——而工具层会把这些乱码当成真实路径去用。
     这条用例在 cp936 环境下能钉住该缺陷（纯 ASCII 路径测不出来）。
     """
-    (git_repo / "文.txt").write_text("HELLO\n", encoding="utf-8")
+    write_lf(git_repo / "文.txt", "HELLO\n")
 
     status_out = git_server.status(git_repo)
 
@@ -311,7 +403,7 @@ def test_git_apply_patch_cannot_write_through_a_directory_link(
     assert not (outside / "newfile.txt").exists(), "根外不得出现新文件"
 
     # 对照：根内补丁仍须正常工作（防误伤）
-    (git_repo / "inside.txt").write_text("INSIDE-ORIGINAL\n", encoding="utf-8")
+    write_lf(git_repo / "inside.txt", "INSIDE-ORIGINAL\n")
     git_server.apply_patch(
         git_repo,
         "--- a/inside.txt\n+++ b/inside.txt\n@@ -1 +1 @@\n-INSIDE-ORIGINAL\n+INSIDE-PATCHED\n",
@@ -451,7 +543,7 @@ def test_git_apply_patch_allows_legitimate_in_root_patches(git_repo: Path) -> No
 
     只做"拒绝"断言容易把校验写成"一律拒绝"——那是把功能改坏了。
     """
-    (git_repo / "a.txt").write_text("A\n", encoding="utf-8")
+    write_lf(git_repo / "a.txt", "A\n")
 
     git_server.apply_patch(
         git_repo, "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-A\n+A2\n"
@@ -536,32 +628,30 @@ def test_files_git_would_write_distinguishes_failure_from_empty(git_repo: Path) 
     assert bad != [], "None 与 [] 必须可区分——这正是本轮的修复点"
 
 
-def test_files_git_would_write_treats_missing_stdout_as_unverifiable(git_repo: Path) -> None:
-    """`stdout is None`（解码失败等）必须判为**无法枚举** → `None`。
+def test_stdin_helper_decodes_bytes_and_reports_rc(git_repo: Path) -> None:
+    """`_run_git_with_stdin` 必须：按字节喂入、按 UTF-8 解出 str、如实返回 rc。
 
-    第二十九轮真机踩到：`text=True` 不带 encoding 时按本地代码页（cp936）解码 git 的
-    UTF-8 输出，reader 线程抛 `UnicodeDecodeError`，于是 **rc=0 但 stdout 不可用**。
-    旧代码用 `(proc.stdout or "")` 把它当成空清单 → "无法验证"被静默当成"已验证"，
-    进而由守卫 3 误拒**合法**补丁（错误信息还是"不写任何文件"，完全误导）。
+    这条替换了早先的"`stdout is None` 要 fail-closed"用例：改成字节 stdin + 显式
+    `decode("utf-8", "replace")` 之后，`stdout` **在结构上必然是 str**，
+    那条分支已成死代码（已按 §8.5 删除并登记）。现在守的是**契约**：
+    写方向不做换行翻译、读方向不按本地代码页解码。
     """
-    import subprocess as sp
+    write_lf(git_repo / "helper.txt", "a\nb\n")
+    patch = "--- a/helper.txt\n+++ b/helper.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n"
 
-    import patchpilot.tools.git_server as module
+    returncode, stdout, stderr = git_server._run_git_with_stdin(
+        git_repo, ["apply", "--numstat", "--summary", "-"], patch
+    )
 
-    class _FakeCompleted:
-        returncode = 0
-        stdout = None
-        stderr = None
-
-    original = module.subprocess.run
-    try:
-        module.subprocess.run = lambda *a, **k: _FakeCompleted()  # type: ignore[assignment]
-        result = module._files_git_would_write(git_repo, "diff --git a/x b/x\n", {})
-    finally:
-        module.subprocess.run = original  # type: ignore[assignment]
-
-    assert result is None, f"stdout 不可用时必须返回 None，实际 {result}"
-    assert sp  # 保持导入可见
+    assert returncode == 0
+    assert isinstance(stdout, str)
+    assert isinstance(stderr, str)
+    assert "helper.txt" in stdout, f"LF 补丁必须被正确识别，实际 {stdout!r}"
+    # 失败时 rc 必须非 0（由调用方据此 fail-closed）
+    bad_rc, _out, _err = git_server._run_git_with_stdin(
+        git_repo, ["apply", "--numstat", "--summary", "-"], "这不是补丁\n"
+    )
+    assert bad_rc != 0
 
 
 def test_files_git_would_write_unquotes_c_style_names(git_repo: Path) -> None:
@@ -620,7 +710,8 @@ def test_git_list_layer_holds_even_when_static_layer_is_blind(
 
     第二十九轮补充：**参数化非 ASCII 链接名**。此前只用 ASCII 名，
     于是"git 清单道不做 C 反转义"这个盲区永远不会变红
-    （`J链` 会被 git 输出成 `"J\301\264/…"`，不做反转义就核对了一个不存在的路径）。
+    （`J链` 的 UTF-8 字节是 `E9 93 BE`，git 引号化后为 `"J\351\223\276/…"`；
+    不做反转义就核对了一个不存在的路径）。
     """
     import os as _os
 
@@ -703,7 +794,7 @@ def test_git_apply_patch_rejects_rename_and_copy_through_a_link(
     if not created:
         pytest.skip("本平台无法创建 junction/symlink（无法验证 rename/copy 防护）")
 
-    (git_repo / "src.txt").write_text("RENAME-ME\n", encoding="utf-8")
+    write_lf(git_repo / "src.txt", "RENAME-ME\n")
     rename_patch = (
         "diff --git a/src.txt b/src.txt\n"
         "similarity index 100%\n"

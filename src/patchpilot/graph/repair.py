@@ -48,6 +48,7 @@ from patchpilot.core.llm import ChatMessage, LLMClient, LLMResponse
 from patchpilot.core.logging import get_logger
 from patchpilot.core.models import FailureKind
 from patchpilot.core.pricing import estimate_cost_usd
+from patchpilot.core.textio import write_text_lf
 from patchpilot.observability.tracing import Tracer
 from patchpilot.sandbox.manager import SandboxResult, run_pytest_in_sandbox
 from patchpilot.sandbox.policy import SandboxPolicy
@@ -532,8 +533,7 @@ def build_repair_graph(
         out_dir = options.output_dir or (options.issue_file.parent / "patchpilot-out")
         target = Path(out_dir) / f"patchpilot-{state.get('task_id', 'task')}.diff"
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(patch, encoding="utf-8")
+            write_text_lf(target, patch)
             path = str(target)
         except OSError:
             path = ""

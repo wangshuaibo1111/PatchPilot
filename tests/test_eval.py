@@ -17,9 +17,15 @@ from patchpilot.eval.runner import EvalReport, TaskOutcome
 from patchpilot.sandbox.policy import DEFAULT_IMAGE
 
 
-def _write(path: Path, text: str) -> Path:
+def write_lf(path: Path, text: str) -> None:
+    """写入严格 LF 的文件（`write_text` 在 Windows 上会翻成 CRLF）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
+
+
+
+def _write(path: Path, text: str) -> Path:
+    write_lf(path, text)
     return path
 
 

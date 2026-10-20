@@ -37,6 +37,7 @@ from typing import Any
 
 from patchpilot.core.llm import LLMClient
 from patchpilot.core.logging import get_logger
+from patchpilot.core.textio import write_text_lf
 from patchpilot.eval.dataset import EvalTask
 from patchpilot.graph.repair import RepairOptions, run_repair
 from patchpilot.sandbox.manager import run_pytest_in_sandbox
@@ -366,10 +367,7 @@ def run_eval(
 
 def write_report(report: EvalReport, path: Path) -> Path:
     """报告落盘（JSON，含全部指标与逐题结果）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_text_lf(path, json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n")
     return path
 
 

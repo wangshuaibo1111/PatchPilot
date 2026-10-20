@@ -133,8 +133,13 @@ def _validate(subcommand: str, args: list[str]) -> None:
                 )
 
 
-def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
-    env = {
+def _git_env(root: Path) -> dict[str, str]:
+    """git 子进程的环境：**剥掉凭据与系统配置**，且不交互。
+
+    三处调用（`_run_git` / `apply_patch` 的真应用 / git 清单枚举）共用同一份，
+    避免某处漏掉 `GIT_CONFIG_NOSYSTEM` 之类的隔离项。
+    """
+    return {
         "GIT_TERMINAL_PROMPT": "0",  # 绝不交互式索要凭据
         "GIT_ASKPASS": "",  # 不调用外部 askpass
         "GIT_CONFIG_NOSYSTEM": "1",  # 忽略系统级配置（可能含 insteadOf 改写）
@@ -142,6 +147,10 @@ def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
         "HOME": str(root),  # 让 git 找不到宿主 ~/.gitconfig 与 ~/.git-credentials
         "PATH": os.environ.get("PATH", ""),
     }
+
+
+def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
+    env = _git_env(root)
     try:
         proc = subprocess.run(
             # `core.quotePath=false`：否则 git 会把非 ASCII 路径输出成
@@ -169,7 +178,42 @@ def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
         raise GitError(
             f"git {argv[0]} 失败（rc={proc.returncode}）: {(proc.stderr or '').strip()[:300]}"
         )
+    if proc.stdout is None:
+        # 与 `_files_git_would_write` 同口径：输出不可用 = 无法信任 = 拒绝
+        raise GitError(f"git {argv[0]} 未产生可读输出（解码失败？）")
     return proc.stdout
+
+
+def _run_git_with_stdin(
+    root: Path, argv: list[str], stdin_text: str, *, timeout_s: float = 60.0
+) -> tuple[int, str, str]:
+    """把 `stdin_text` **按字节**喂给 git，返回 `(rc, stdout, stderr)`（均已解成 str）。
+
+    **为什么必须走字节，不能用 `input=str` + `text=True`**（第二十九轮真机：
+    这个 bug 让"合法补丁打不上 LF 仓库"，还让新建文件**静默变成 CRLF**）：
+    `text=True` 时 Python 用文本流写 stdin，**按 `os.linesep` 做换行翻译**——
+    在 Windows 上补丁里的每个 `\n` 都会变成 `\r\n`。
+    后果：
+      - 目标文件是 LF（本仓库就是 `i/lf w/lf`）时，git 找不到带 CR 的上下文行 →
+        `error: patch does not apply`，**合法补丁被拒**；
+      - 新建文件时补丁内容被写成 CRLF，函数却返回 ok → **静默改了行尾**。
+    两者的共同点是"补丁字节与实际落盘字节不一致"，属必须避免的静默错误。
+
+    反过来的 `text=True` 读方向也不可靠（上一轮 BLOCKING：按本地代码页解码），
+    所以这里读写两侧都显式 UTF-8：写用 `.encode("utf-8")`，读用 `.decode("utf-8", "replace")`。
+    """
+    proc = subprocess.run(
+        ["git", "-c", "core.quotePath=false", *argv],
+        cwd=root,
+        input=stdin_text.encode("utf-8"),
+        capture_output=True,
+        timeout=timeout_s,
+        env=_git_env(root),
+        check=False,
+    )
+    stdout = (proc.stdout or b"").decode("utf-8", "replace")
+    stderr = (proc.stderr or b"").decode("utf-8", "replace")
+    return proc.returncode, stdout, stderr
 
 
 def status(root: Path) -> str:
@@ -213,13 +257,7 @@ def apply_patch(root: Path, patch: str, *, check_only: bool = False) -> str:
     argv = ["apply", "--whitespace=nowarn", "--verbose"]
     if check_only:
         argv.append("--check")
-    proc_argv = ["git", *argv]
-    env = {
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "HOME": str(root),
-        "PATH": os.environ.get("PATH", ""),
-    }
+    env = _git_env(root)
 
     # **独立于"猜路径"的最后一道网**（第二十七轮结论）：
     # 文本/解析两道都在"我们理解 git 会怎么解析路径"这个前提上——而实测反复被
@@ -243,22 +281,12 @@ def apply_patch(root: Path, patch: str, *, check_only: bool = False) -> str:
         if _path_escapes(root, name):
             raise GitError(f"git 报告将要写根之外的路径，拒绝执行: {name}")
 
-    proc = subprocess.run(
-        proc_argv,
-        cwd=root,
-        input=patch,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        env=env,
-        check=False,
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or "").strip()[:300]
-        raise GitError(f"补丁应用失败（rc={proc.returncode}）: {detail}")
-    return proc.stdout or "ok"
+    # **字节喂 stdin**（不能用 `input=str` + `text=True`：Windows 上会做换行翻译，
+    # 见 `_run_git_with_stdin` 的 docstring）。
+    returncode, stdout, stderr = _run_git_with_stdin(root, argv, patch)
+    if returncode != 0:
+        raise GitError(f"补丁应用失败（rc={returncode}）: {stderr.strip()[:300]}")
+    return stdout or "ok"
 
 
 def _unquote_c_style(token: str) -> str | None:
@@ -417,37 +445,25 @@ def _files_git_would_write(root: Path, patch: str, env: dict[str, str]) -> list[
 
     **返回 `None` 表示"无法枚举"**（而不是"没有文件要写"）。三种情况都归入 `None`：
       1. git 解析失败（rc != 0）；
-      2. `proc.stdout is None`（**第二十九轮真机踩到**：`text=True` 不带 encoding 时按
-         本地代码页 cp936 解码 UTF-8 路径会失败，reader 线程报错 → stdout 为 None
-         而 rc 仍为 0。此时"无法验证"会被静默当成"已验证"，正是要堵的那个洞）；
+      2. 输出不可读（解码失败等，见 `_run_git_with_stdin`）；
       3. 某个名字无法按 git 的 C 转义规则还原（无法还原 = 无法验证 = 拒绝）。
 
-    只有"git 解析成功、stdout 可读、名字全部还原"时才返回（可能为空的）清单。
+    只有"git 解析成功、输出可读、名字全部还原"时才返回（可能为空的）清单。
     空清单 + 补丁里声明了路径 → 自相矛盾，由调用方拒绝。
+
+    **必须按字节喂 stdin**（`_run_git_with_stdin`）：否则 Windows 上换行会被翻译成
+    `\r\n`，枚举时 git 看到的补丁与真正 apply 时不同，甚至直接解析失败。
     """
-    proc = subprocess.run(
-        # 同 `_run_git`：让 git 直接输出真实路径（不做八进制转义），
-        # 这样清单道拿到的就是它真的会去写的名字；控制字符名仍会被引号化，
-        # 下面用 `_unquote_c_style` 还原。
-        ["git", "-c", "core.quotePath=false", "apply", "--numstat", "--summary", "-"],
-        cwd=root,
-        input=patch,
-        capture_output=True,
-        text=True,
-        # 与 `_run_git` 同口径：git 输出的是 UTF-8，必须显式指定，
-        # 否则非 ASCII 路径会按本地代码页解码失败（详见 docstring 第 2 条）。
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        env=env,
-        check=False,
+    returncode, stdout, _stderr = _run_git_with_stdin(
+        root, ["apply", "--numstat", "--summary", "-"], patch
     )
-    if proc.returncode != 0:
+    if returncode != 0:
         return None
-    if proc.stdout is None:
-        # 解码失败等异常：**无法枚举**，必须走 fail-closed，绝不能当成"空清单"
-        return None
-    return _names_from_numstat(proc.stdout)
+    # 说明（§8.5 登记）：早先这里是 `if proc.stdout is None: return None`，
+    # 用于兜住"text 模式按本地代码页解码失败"的情形。改成字节 stdin + 显式
+    # `decode("utf-8", "replace")` 之后，`stdout` **在结构上必然是 str**，
+    # 那条分支已成死代码，故删除；`None` 现在只由"rc != 0"与"名字无法还原"产生。
+    return _names_from_numstat(stdout)
 
 
 def _names_from_numstat(output: str) -> list[str] | None:

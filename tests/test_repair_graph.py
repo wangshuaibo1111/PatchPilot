@@ -26,6 +26,13 @@ from patchpilot.sandbox.manager import SandboxResult
 from patchpilot.sandbox.policy import SandboxPolicy
 
 
+def write_lf(path: Path, text: str) -> None:
+    """写入严格 LF 的文件（`write_text` 在 Windows 上会翻成 CRLF）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+
+
+
 class ScriptedLLM:
     """按脚本逐个返回响应；用于精确控制"第 N 轮模型输出什么"。"""
 
@@ -98,7 +105,7 @@ GOOD_PATCH = (
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "parse.py").write_text("def parse_config(text):\n    return text\n", encoding="utf-8")
+    write_lf(root / "parse.py", "def parse_config(text):\n    return text\n")
     return root
 
 

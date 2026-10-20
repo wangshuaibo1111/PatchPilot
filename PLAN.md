@@ -39,7 +39,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | # | 验收项（Definition of Done） | 验证方式 | 状态 |
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
-| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**（网络不可达 / rootfs 只读 / 非 root / 内存 OOM 熔断 / pids 超限 fork 被拒 / 超时截断且无残留）；逃逸面经四轮真机复审逐步收口（search 剪链接 / `git apply` 写穿 → **以 git 清单为准 + fail-closed**），变异自证 **4/4 KILLED**；**523 项单测全绿** |
+| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**（stdio 协议层已验证）＋ 自建镜像；**真机端到端 15/15**（网络不可达 / rootfs 只读 / 非 root / 内存 OOM 熔断 / pids 超限 fork 被拒 / 超时截断且无残留）；逃逸面经六轮真机复审逐步收口（search 剪链接 / `git apply` 写穿 → **以 git 清单为准 + fail-closed**；再修 **stdin 编码侧**：补丁按字节喂 git，杜绝 CRLF 注入），变异自证 **13/13 KILLED**（2 条等价变异已登记）；**535 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
 | 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、总 token 5,865、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**未做**：BenchEval（SWE-bench Lite 50 题）——那是论文级数字，需要外部数据集与更长预算 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
@@ -338,17 +338,43 @@ D:\Code\PatchPilot\
   - `_names_from_numstat` 的 C 反转义在 `core.quotePath=false` 下对非 ASCII 名是**冗余**
     （git 已输出原始名），但一旦该配置被改动/遇到控制字符名就会成为唯一防线；
     为让它可被钉住，已抽成独立函数并加**解析规则直测**（喂 git 的引号化输出）。
-- **已知边界（如实登记）**：`--numstat` 对**纯 mode 变更 / 二进制 / 空文件新建**等形态
-  本机 git 2.54 自己就拒绝（改前改后一致），"合法补丁防误伤 7 类"**不含**这三类。
+- **已知边界（如实登记·经复审更正）**：早先写"`--numstat` 对纯 mode 变更 / 二进制 /
+  空文件新建本机 git 2.54 自己就拒绝"——**这条不实**。复审实测：同一补丁以 **bytes** 喂
+  git 2.54，mode-only 是 `rc=0` + `0\t0\tkeep.txt` + `mode change …`，空文件新建是
+  `rc=0` + `create mode 100644 …`。它们**经工具失败的真因是 CRLF stdin**（见下一条），
+  不是 git 拒绝。真实二进制补丁无法经 str API 表达，属另一类不可达。
 - **平台相关性的教训（写进来以免复发）**：解码类缺陷**依赖环境**——
   本机 Python 的 subprocess 恰好按 UTF-8 解码，而复审者机器直接抛异常。
   因此解码契约用**结构化断言**（检查调用点是否传了 `encoding`）钉住，
   而不是写"复现旧缺陷"的行为断言（那种断言在部分机器上会假绿）。
   全量套件在 **cp936 与 UTF-8 两种模式下各跑一遍**（各 532 passed / 4 skipped）。
+- **第三十轮 BLOCKING 修复（编码侧）**：`input=patch` 与 `text=True` 同时使用时，
+  Windows 上 subprocess 会按 `os.linesep` 把补丁的 `\n` **翻译成 `\r\n`** 再喂给 git。
+  两个方向都能观测到，且都是"静默错误结果"：
+  - 对 **LF 文件**（本仓库就是 `i/lf w/lf`）做一行修改 → `rc=1 patch does not apply`
+    （git 在找带 CR 的上下文行），**合法补丁被拒**；删除补丁同样失败；
+  - **新建文件**：补丁是 `+alpha\n+beta`，落盘却是 `b'alpha\r\nbeta\r\n'`，函数仍返回 `ok`
+    → **静默改了行尾**。
+  **为什么 535 项测试没抓到**：夹具全用 `Path.write_text`，在 Windows 上落盘就是 CRLF，
+  "夹具 CRLF + 补丁被翻成 CRLF"两边一起错、恰好一致（`write_text("# demo\n")` → `b'# demo\r\n'`）。
+  **修法**：
+  1. 新增 `_run_git_with_stdin`：`input=patch.encode("utf-8")`（**字节**）、不走 text 模式、
+     输出显式 `.decode("utf-8", "replace")`；`apply_patch` 真应用与 `_files_git_would_write` 都改；
+  2. 抽出 `_git_env(root)`，三处调用共用"剥凭据 / 不交互"环境；
+  3. `_run_git` 补 `stdout is None` 的 fail-closed 守卫；
+  4. 新增 `core/textio.write_text_lf`：所有会参与补丁/内容比对的写入（语料物化、补丁落盘、
+     `fs` 写文件、评测报告、基线）统一按字节写 UTF-8，杜绝 `write_text` 的平台换行翻译；
+  5. 测试夹具新增 `write_lf()`（`write_bytes`），测试仓库加 `core.autocrlf=false`。
+  **判据**：改 LF 文件成功 / 删 LF 文件成功 / 新建文件盘上字节严格 `\n` /
+  清单道与 apply 看到同一份补丁；变异 **M-I（退回 text 模式）与 M-K（绕过 stdin）双双 KILLED**。
+- **§8.5 追加登记（等价变异）**：`_run_git_with_stdin` 里 `(bytes).decode()` 与
+  `.decode("utf-8")` **行为等价**（后者默认即 UTF-8），唯一差异是不带参数时 `errors=strict`。
+  要区分二者需让 git 输出**非法 UTF-8 字节**（Windows 上无法造），故登记为等价变异，
+  不计为覆盖缺口。
 - **文件**：`src/patchpilot/tools/git_server.py`、`tests/test_tools.py`、`PLAN.md`
 - **验证**：
   - `ruff check src tests` → All checks passed
-  - `pytest -o addopts=""` → **523 passed + 4 skipped**，0 failed / 0 error
+  - `pytest -o addopts=""` → **535 passed + 4 skipped**（cp936 与 UTF-8 两种模式），0 failed / 0 error
   - 真机 e2e（沙箱 4 类安全）→ **15/15**
   - junction 形态矩阵 → **12/12**（越界全拒、根内全通过）
   - junction 写穿复核 → **8/8**

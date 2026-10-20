@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from patchpilot.core.textio import write_text_lf
 from patchpilot.tools import ToolError, list_dir, read_text_file, resolve
 
 MAX_WRITE_BYTES = 2 * 1024 * 1024
@@ -41,8 +42,7 @@ def write_file(root: Path, path: str, content: str) -> str:
     if target.absolute.is_symlink():
         raise ToolError(f"拒绝写入符号链接（可能是逃逸路径）: {target.relative}")
 
-    target.absolute.parent.mkdir(parents=True, exist_ok=True)
-    target.absolute.write_text(content, encoding="utf-8")
+    write_text_lf(target.absolute, content)
     return target.relative
 
 

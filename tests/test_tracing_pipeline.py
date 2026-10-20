@@ -36,6 +36,12 @@ GOOD_PATCH = (
     "+    return text\n"
 )
 
+def write_lf(path: Path, text: str) -> None:
+    """写入严格 LF 的文件（`write_text` 在 Windows 上会翻成 CRLF）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+
+
 
 class _LLM:
     def __init__(self, text: str, *, model: str = "deepseek-flash") -> None:
@@ -64,7 +70,7 @@ def _ok_report() -> object:
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "parse.py").write_text("def parse_config(text):\n    return text\n", encoding="utf-8")
+    write_lf(root / "parse.py", "def parse_config(text):\n    return text\n")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
