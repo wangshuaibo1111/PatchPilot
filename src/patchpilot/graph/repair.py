@@ -106,6 +106,8 @@ class RepairOptions:
     # 补丁产物目录。**默认必须与 issue 文件分开**：评测时 issue 文件在语料仓库里，
     # 早先按 `issue_file.parent` 落盘会把 `*.diff` 写进被评测的仓库（实测污染了 6 个语料目录）。
     output_dir: Path | None = None
+    # 是否用 P2 的三路召回做定位（False 则回到 P1 的符号+子串路径，供消融对比）。
+    use_index_localizer: bool = True
     # trace 目录。为 None 时**完全不产生 IO**（离线测试与门禁不受影响）。
     trace_dir: Path | None = None
     price_overrides: Mapping[str, tuple[float, float]] | None = None
@@ -211,6 +213,15 @@ def build_prompt(state: RepairState, options: RepairOptions) -> str:
     if previous:
         parts += ["", "## 上一轮失败补丁", "```diff", previous[:2000], "```"]
     return "\n".join(parts)
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    """去重保序（同一文件可能因多个 chunk 重复出现）。"""
+    seen: list[str] = []
+    for path in paths:
+        if path not in seen:
+            seen.append(path)
+    return seen
 
 
 def _read_snippet(repo: Path, name: str, *, max_chars: int = 2000) -> str:
@@ -333,31 +344,63 @@ def build_repair_graph(
 
     # ---------------- 节点 2：locate
     def locate(state: RepairState) -> dict[str, Any]:
+        """定位候选文件：**P2 三路召回为主，旧路径为兜底**。
+
+        排序依据（P2 定位基准实测，见 `eval/locate_bench.py`）：
+        在"提交信息当 issue"的历史题集上，旧的符号+子串路径 Top-1 只有 30%，
+        而三路召回（符号 / BM25 / 调用图 + 重排）是 80%。所以主路径换成后者；
+        它返回空时仍回退到旧路径（例如仓库里没有可索引的源文件）。
+        """
         if not state.get("issue"):
             return {"candidates": [], "notes": ["locate: 无 issue，跳过"]}
-        terms = extract_terms(state.get("issue", ""))
+        issue_text = state.get("issue", "")
+        terms = extract_terms(issue_text)
         hits: list[str] = []
+        channels_used = ""
         sink = tracer.span("retrieval.search", terms=len(terms)) if tracer else _NULL_SPAN
-        with sink:
-            for term in terms:
-                for match in search_server.search_symbol(options.repo, term):
-                    if match.path not in hits:
-                        hits.append(match.path)
-                if len(hits) >= options.locate_limit:
-                    break
-            if not hits:  # 符号找不到就退化为文本检索
+        with sink as search_span:
+            if options.use_index_localizer:
+                try:
+                    from patchpilot.index.retrieval import Localizer
+                    from patchpilot.index.symbols import index_repo
+
+                    localizer = Localizer(index_repo(options.repo))
+                    localised = localizer.localize(issue_text, limit=options.locate_limit)
+                    hits = _dedupe_paths([hit.path for hit in localised])
+                    if localised:
+                        channel_set: set[str] = set()
+                        for hit in localised:
+                            channel_set.update(hit.channels)
+                        channels_used = ",".join(sorted(channel_set))
+                    if search_span is not None:
+                        search_span.attributes["channels"] = channels_used or "none"
+                        search_span.attributes["hit"] = len(hits)
+                except Exception as exc:  # noqa: BLE001 - 索引失败必须能兜底
+                    log.warning("repair.locate_index_failed", error=type(exc).__name__)
+            if not hits:
+                # 兜底：旧的符号 + 文本子串路径（行为与 P1 完全一致）
                 for term in terms:
-                    for match in search_server.search_text(
-                        options.repo, term, max_results=options.locate_limit
-                    ):
+                    for match in search_server.search_symbol(options.repo, term):
                         if match.path not in hits:
                             hits.append(match.path)
                     if len(hits) >= options.locate_limit:
                         break
-        log.info("repair.locate", candidates=len(hits))
+                if not hits:
+                    for term in terms:
+                        for match in search_server.search_text(
+                            options.repo, term, max_results=options.locate_limit
+                        ):
+                            if match.path not in hits:
+                                hits.append(match.path)
+                        if len(hits) >= options.locate_limit:
+                            break
+                channels_used = channels_used or "fallback"
+        log.info("repair.locate", candidates=len(hits), channels=channels_used)
         update: dict[str, Any] = {
             "candidates": hits[: options.locate_limit],
-            "notes": [f"locate: 命中 {len(hits)} 个候选文件 {hits[:3]}"],
+            "notes": [
+                f"locate: 命中 {len(hits)} 个候选文件（通道 {channels_used or 'none'}） {hits[:3]}"
+            ],
         }
         if not hits:
             # 无候选 = 定位失败：必须**显式写归因**，否则收尾时状态里没有 failure_kind

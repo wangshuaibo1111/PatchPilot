@@ -1,0 +1,122 @@
+[
+  {
+    "config": "基线（现有 locate：符号+文本子串）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "基线（现有 locate：符号+文本子串）",
+    "group": "history",
+    "total": 10,
+    "top1": 0.3,
+    "top5": 0.3,
+    "mrr": 0.3,
+    "misses": [
+      "0e02dbe8",
+      "832671d0",
+      "806e36c6",
+      "4a97986f",
+      "5100a1dc",
+      "2c36a3bc",
+      "0ad9ea81"
+    ]
+  },
+  {
+    "config": "仅符号通道",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "仅符号通道",
+    "group": "history",
+    "total": 10,
+    "top1": 0.7,
+    "top5": 0.7,
+    "mrr": 0.7,
+    "misses": [
+      "806e36c6",
+      "4a97986f",
+      "0ad9ea81"
+    ]
+  },
+  {
+    "config": "仅词法 BM25",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "仅词法 BM25",
+    "group": "history",
+    "total": 10,
+    "top1": 0.8,
+    "top5": 1.0,
+    "mrr": 0.8583,
+    "misses": []
+  },
+  {
+    "config": "符号+词法（无图、无重排）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "符号+词法（无图、无重排）",
+    "group": "history",
+    "total": 10,
+    "top1": 0.8,
+    "top5": 0.9,
+    "mrr": 0.8417,
+    "misses": []
+  },
+  {
+    "config": "符号+词法+图（无重排）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "符号+词法+图（无重排）",
+    "group": "history",
+    "total": 10,
+    "top1": 0.7,
+    "top5": 0.9,
+    "mrr": 0.7917,
+    "misses": []
+  },
+  {
+    "config": "三路 + 重排（P2 完整）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "三路 + 重排（P2 完整）",
+    "group": "history",
+    "total": 10,
+    "top1": 0.8,
+    "top5": 0.9,
+    "mrr": 0.8667,
+    "misses": []
+  }
+]

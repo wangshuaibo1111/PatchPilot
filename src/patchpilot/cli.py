@@ -28,6 +28,7 @@ from patchpilot.core.config import Settings, get_settings
 from patchpilot.core.logging import configure_logging
 from patchpilot.core.preflight import run_preflight
 from patchpilot.core.pricing import is_priced
+from patchpilot.core.textio import write_text_lf
 from patchpilot.graph.minimal import run_minimal_demo
 
 app = typer.Typer(
@@ -693,6 +694,74 @@ def serve(
     console.print(f"  trace 目录: {directory}")
     console.print(f"  评测报告  : {report}（{'存在' if report.is_file() else '暂缺'}）")
     uvicorn.run(create_app(trace_dir=directory, eval_report=report), host=host, port=port)
+
+
+@app.command()
+def locate(
+    scope: Path = typer.Option(
+        Path("src/patchpilot"), "--scope", help="索引范围（相对 git 根）"
+    ),
+    corpus: Path | None = typer.Option(
+        None, "--corpus", help="语料 JSON（默认 eval/fast_corpus.json）"
+    ),
+    history: int = typer.Option(60, "--history", help="从提交历史取多少条提交流程作题"),
+    git_root: Path = typer.Option(Path("."), "--git-root", help="git 仓库根"),
+    out: Path | None = typer.Option(None, "--out", help="把消融表写成 JSON"),
+) -> None:
+    """**P2 验收**：定位基准 + 消融表（Top-1 / Top-5 / MRR）。
+
+    两组题目分开报告，**不混成一个数**：
+      - `corpus`：语料 issue 集（自然语言，用户风格，样本少）；
+      - `history`：把提交信息当 issue、改动文件当期望（真实代码，但信息偏乐观）。
+    """
+    import json
+
+    from patchpilot.eval.locate_bench import run_locate_bench
+
+    resolved_root = git_root.resolve()
+    resolved_scope = (resolved_root / scope).resolve()
+    if not resolved_scope.is_dir():
+        raise typer.BadParameter(f"--scope 不是目录: {resolved_scope}")
+    corpus_path = corpus or Path("eval/fast_corpus.json")
+
+    with console.status("建索引并跑消融…"):
+        outcome = run_locate_bench(
+            git_root=resolved_root,
+            scope=resolved_scope,
+            corpus_path=corpus_path if corpus_path.is_file() else None,
+            history_limit=history,
+        )
+
+    table = Table(title="P2 定位基准（消融表）")
+    table.add_column("配置", style="bold")
+    table.add_column("题目组")
+    table.add_column("题数", justify="right")
+    table.add_column("Top-1", justify="right")
+    table.add_column("Top-5", justify="right")
+    table.add_column("MRR", justify="right")
+    for row in outcome.table():
+        table.add_row(*[str(cell) for cell in row])
+    console.print(table)
+
+    console.print(
+        "[dim]注：history 组的提交信息常直接点名函数，比真实用户报告好定位；"
+        "corpus 组样本少（天花板效应）。两组不可混谈。[/dim]"
+    )
+    if out is not None:
+        payload = [
+            {
+                "config": score.config,
+                "group": score.group,
+                "total": score.total,
+                "top1": round(score.top1, 4),
+                "top5": round(score.top5, 4),
+                "mrr": round(score.mrr, 4),
+                "misses": list(score.misses),
+            }
+            for score in outcome.scores
+        ]
+        write_text_lf(out, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        console.print(f"消融表已写入 [bold]{out}[/bold]")
 
 
 if __name__ == "__main__":  # pragma: no cover
