@@ -174,7 +174,7 @@ PatchPilot\
 |---|---|---|
 | **P0** | 工程骨架：CLI、配置、预算熔断、LangGraph 最小图、checkpointer、docker compose、CI、双门禁协议 | ✅ **已完成并发布**（`0ad9ea8` 已推送 `origin/main`） |
 | **P1** | 沙箱与工具：Docker 隔离 + 4 个 MCP Server（fs/git/test/search）+ 4 类安全用例 | ✅ **已完成**（验收项 2）：沙箱驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server 已在 stdio 协议层验证**；自建执行镜像 `docker/sandbox/Dockerfile`；**真机 Docker 端到端 15/15**（uid=1000、宿主不可见、rootfs 只读、网络不可达、内存 OOM rc=137、pids 超限 fork 被拒、超时截断且无残留）；单测 452 |
-| **P2** | 检索与定位：符号索引、BM25 + 向量 + 调用图召回、重排 | ✅ **已完成**：纯标准库符号索引（`ast`）+ BM25（标识符拆分）+ **词法哈希向量** + 调用图扩散 + RRF 融合（含每通道 top-K 截断）+ 可解释重排；`pp locate` 出 **8 组消融表**。**历史题集 Top-1：基线 9.1% → 四路完整 72.7%**（MRR 0.806；BM25 单独 MRR 最高 0.826，样本小、组内差异在噪声内）。**未做**：语义 embedding（需模型依赖，与离线门禁冲突） |
+| **P2** | 检索与定位：符号索引、BM25 + 向量 + 调用图召回、重排 | ✅ **已完成**：纯标准库符号索引（`ast`）+ BM25（标识符拆分）+ **词法哈希向量** + 调用图扩散 + RRF 融合（含每通道 top-K 截断）+ 可解释重排；`pp locate` 出 **8 组消融表**。**39 题汇总 Top-1：基线 48.7% → 69.2%（+20.5pp）**，Top-5 51.3% → 84.6%、MRR 0.768；三组分开报告（语料 6 / 合成 20 / 历史 13，**只信汇总行**，单组 1 题 = 5~17pp）。**未做**：语义 embedding（需模型依赖，与离线门禁冲突） |
 | **P3** | 修复闭环：补丁生成、`fail_to_pass` / `pass_to_pass` 判定、有限轮次自省 | 未开始 |
 | **P4** | 评测闭环：SWE-bench 子集 runner、消融矩阵、成本/耗时曲线 | 🔧 **FastEval 已实现**：`pp eval` 一条命令出报告 —— 自建 6 题 `pass@1 = 6/6`、总成本 \$0.0040、P95 15.1s（温度 0、镜像锁定 tag，报告含题目 id/commit/镜像，第三方可照着重跑）；**待做**：BenchEval（SWE-bench Lite 50 题）与策略消融矩阵 |
 | **P5–P7** | 可观测性、服务化、Web 控制台 | ✅ **已完成（有意简化）**：可观测性 = 自建 JSONL trace（四类 span）+ pp trace 回放；服务化 = pp serve（FastAPI 只读面板）；一键部署 = docker compose up 起 panel 服务。**未采用** OTel/Langfuse 与 Next.js：面板零前端构建（单页内联 HTML/JS，镜像 237MB），只读不提供执行入口 |

@@ -10,12 +10,60 @@
   },
   {
     "config": "基线（P1 现有 locate：符号+子串）",
-    "group": "history",
-    "total": 11,
-    "top1": 0.0909,
-    "top5": 0.0909,
-    "mrr": 0.0909,
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.5,
+    "top5": 0.55,
+    "mrr": 0.525,
     "misses": [
+      "syn-01-hard",
+      "syn-02-hard",
+      "syn-03-hard",
+      "syn-04-hard",
+      "syn-06-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "基线（P1 现有 locate：符号+子串）",
+    "group": "history",
+    "total": 13,
+    "top1": 0.2308,
+    "top5": 0.2308,
+    "mrr": 0.2308,
+    "misses": [
+      "383ac45a",
+      "0e02dbe8",
+      "832671d0",
+      "806e36c6",
+      "4a97986f",
+      "5100a1dc",
+      "ea9e6923",
+      "2c36a3bc",
+      "0f5793f5",
+      "0ad9ea81"
+    ]
+  },
+  {
+    "config": "基线（P1 现有 locate：符号+子串）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.4872,
+    "top5": 0.5128,
+    "mrr": 0.5,
+    "misses": [
+      "syn-01-hard",
+      "syn-02-hard",
+      "syn-03-hard",
+      "syn-04-hard",
+      "syn-06-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard",
       "383ac45a",
       "0e02dbe8",
       "832671d0",
@@ -39,12 +87,57 @@
   },
   {
     "config": "仅符号通道",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.55,
+    "top5": 0.55,
+    "mrr": 0.55,
+    "misses": [
+      "syn-01-hard",
+      "syn-03-hard",
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-06-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "仅符号通道",
     "group": "history",
-    "total": 11,
-    "top1": 0.4545,
-    "top5": 0.5455,
+    "total": 13,
+    "top1": 0.4615,
+    "top5": 0.5385,
     "mrr": 0.5,
     "misses": [
+      "6ea089ae",
+      "383ac45a",
+      "832671d0",
+      "806e36c6",
+      "4a97986f",
+      "0ad9ea81"
+    ]
+  },
+  {
+    "config": "仅符号通道",
+    "group": "all",
+    "total": 39,
+    "top1": 0.5897,
+    "top5": 0.6154,
+    "mrr": 0.6026,
+    "misses": [
+      "syn-01-hard",
+      "syn-03-hard",
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-06-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard",
+      "6ea089ae",
       "383ac45a",
       "832671d0",
       "806e36c6",
@@ -63,12 +156,47 @@
   },
   {
     "config": "仅词法 BM25",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.55,
+    "top5": 0.7,
+    "mrr": 0.625,
+    "misses": [
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "仅词法 BM25",
     "group": "history",
-    "total": 11,
-    "top1": 0.7273,
-    "top5": 1.0,
-    "mrr": 0.8258,
-    "misses": []
+    "total": 13,
+    "top1": 0.6154,
+    "top5": 0.9231,
+    "mrr": 0.7244,
+    "misses": [
+      "6ea089ae"
+    ]
+  },
+  {
+    "config": "仅词法 BM25",
+    "group": "all",
+    "total": 39,
+    "top1": 0.641,
+    "top5": 0.8205,
+    "mrr": 0.7158,
+    "misses": [
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard",
+      "6ea089ae"
+    ]
   },
   {
     "config": "仅向量（词法哈希）",
@@ -81,12 +209,43 @@
   },
   {
     "config": "仅向量（词法哈希）",
-    "group": "history",
-    "total": 11,
-    "top1": 0.4545,
-    "top5": 0.9091,
-    "mrr": 0.6015,
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.7,
+    "top5": 0.75,
+    "mrr": 0.725,
     "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "仅向量（词法哈希）",
+    "group": "history",
+    "total": 13,
+    "top1": 0.3846,
+    "top5": 0.9231,
+    "mrr": 0.5731,
+    "misses": [
+      "4a97986f"
+    ]
+  },
+  {
+    "config": "仅向量（词法哈希）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.641,
+    "top5": 0.8462,
+    "mrr": 0.7167,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard",
       "4a97986f"
     ]
   },
@@ -101,12 +260,47 @@
   },
   {
     "config": "符号+词法（无图无向量无重排）",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.55,
+    "top5": 0.7,
+    "mrr": 0.625,
+    "misses": [
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "符号+词法（无图无向量无重排）",
     "group": "history",
-    "total": 11,
-    "top1": 0.6364,
-    "top5": 1.0,
-    "mrr": 0.7576,
-    "misses": []
+    "total": 13,
+    "top1": 0.6154,
+    "top5": 0.9231,
+    "mrr": 0.7179,
+    "misses": [
+      "6ea089ae"
+    ]
+  },
+  {
+    "config": "符号+词法（无图无向量无重排）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.641,
+    "top5": 0.8205,
+    "mrr": 0.7137,
+    "misses": [
+      "syn-04-hard",
+      "syn-05-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard",
+      "6ea089ae"
+    ]
   },
   {
     "config": "符号+词法+向量（无图无重排）",
@@ -119,12 +313,42 @@
   },
   {
     "config": "符号+词法+向量（无图无重排）",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.55,
+    "top5": 0.75,
+    "mrr": 0.65,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
+  },
+  {
+    "config": "符号+词法+向量（无图无重排）",
     "group": "history",
-    "total": 11,
-    "top1": 0.7273,
-    "top5": 0.9091,
-    "mrr": 0.8106,
+    "total": 13,
+    "top1": 0.6923,
+    "top5": 0.8462,
+    "mrr": 0.7705,
     "misses": []
+  },
+  {
+    "config": "符号+词法+向量（无图无重排）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.641,
+    "top5": 0.8205,
+    "mrr": 0.7312,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "syn-10-hard"
+    ]
   },
   {
     "config": "符号+词法+图（无向量无重排）",
@@ -137,12 +361,43 @@
   },
   {
     "config": "符号+词法+图（无向量无重排）",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.55,
+    "top5": 0.8,
+    "mrr": 0.675,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard"
+    ]
+  },
+  {
+    "config": "符号+词法+图（无向量无重排）",
     "group": "history",
-    "total": 11,
-    "top1": 0.6364,
-    "top5": 1.0,
-    "mrr": 0.753,
-    "misses": []
+    "total": 13,
+    "top1": 0.6154,
+    "top5": 0.9231,
+    "mrr": 0.7141,
+    "misses": [
+      "6ea089ae"
+    ]
+  },
+  {
+    "config": "符号+词法+图（无向量无重排）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.641,
+    "top5": 0.8718,
+    "mrr": 0.738,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard",
+      "6ea089ae"
+    ]
   },
   {
     "config": "四路 + 重排（P2 完整）",
@@ -155,11 +410,39 @@
   },
   {
     "config": "四路 + 重排（P2 完整）",
+    "group": "synthetic",
+    "total": 20,
+    "top1": 0.6,
+    "top5": 0.8,
+    "mrr": 0.7,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard"
+    ]
+  },
+  {
+    "config": "四路 + 重排（P2 完整）",
     "group": "history",
-    "total": 11,
-    "top1": 0.7273,
-    "top5": 0.9091,
-    "mrr": 0.8061,
+    "total": 13,
+    "top1": 0.6923,
+    "top5": 0.8462,
+    "mrr": 0.7667,
     "misses": []
+  },
+  {
+    "config": "四路 + 重排（P2 完整）",
+    "group": "all",
+    "total": 39,
+    "top1": 0.6923,
+    "top5": 0.8462,
+    "mrr": 0.7684,
+    "misses": [
+      "syn-04-hard",
+      "syn-07-hard",
+      "syn-08-hard",
+      "syn-09-hard"
+    ]
   }
 ]

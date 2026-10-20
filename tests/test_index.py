@@ -427,6 +427,120 @@ def test_locate_bench_expected_paths_share_the_index_coordinate_system(tmp_path:
             )
 
 
+# ---------------------------------------------------------------- 合成语料（第三组）
+
+
+def _synthetic_task(task_id: str = "syn-01-easy", *, rel: str = "loader.py") -> dict:
+    return {
+        "id": task_id,
+        "files": {
+            "loader.py": "def load(text):\n    return text.split('=')\n",
+            "Issue.md": "解析 `key=value` 时崩溃。",
+        },
+        "issue_file": "Issue.md",
+        "expected_files": [rel],
+        "tags": ["synthetic", "easy"],
+    }
+
+
+def test_synthetic_cases_build_from_corpus_json(tmp_path: Path) -> None:
+    import json
+
+    from patchpilot.eval.locate_bench import cases_from_locate_corpus
+
+    corpus = tmp_path / "loc.json"
+    corpus.write_bytes(
+        json.dumps({"tasks": [_synthetic_task()]}, ensure_ascii=False).encode("utf-8")
+    )
+
+    cases = cases_from_locate_corpus(corpus)
+
+    assert len(cases) == 1
+    case = cases[0]
+    assert case.group == "synthetic"
+    assert case.expected_files == {"loader.py"}
+    assert case.index.file("loader.py") is not None, "期望文件必须在索引里（坐标系一致）"
+    assert "key=value" in case.query
+
+
+def test_synthetic_cases_reject_path_traversal(tmp_path: Path) -> None:
+    """语料路径不得逃逸（与 `EvalTask.materialize` 同口径）。"""
+    import json
+
+    from patchpilot.eval.locate_bench import cases_from_locate_corpus
+
+    task = _synthetic_task()
+    task["files"] = {"../escaped.py": "x = 1\n", "Issue.md": "坏了"}
+    task["expected_files"] = ["../escaped.py"]
+    corpus = tmp_path / "loc.json"
+    corpus.write_bytes(json.dumps({"tasks": [task]}, ensure_ascii=False).encode("utf-8"))
+
+    with pytest.raises(ValueError, match="逃逸"):
+        cases_from_locate_corpus(corpus)
+
+
+def test_shipped_synthetic_corpus_is_well_formed() -> None:
+    """入库的合成语料必须结构自洽（恰好一个期望文件、在 files 里、不是测试、有难度标签）。"""
+    import json
+
+    corpus = Path(__file__).resolve().parents[1] / "eval" / "locate_corpus.json"
+    assert corpus.is_file(), "合成语料应已入库"
+
+    payload = json.loads(corpus.read_text(encoding="utf-8"))
+    tasks = payload["tasks"]
+    assert len(tasks) >= 20, f"样本量太少（{len(tasks)}）"
+
+    for task in tasks:
+        expected = task["expected_files"]
+        files = task["files"]
+        assert len(expected) == 1, f"{task['id']}: 期望集合应恰好一个文件"
+        assert expected[0] in files, f"{task['id']}: 期望文件不在 files 里"
+        assert "test" not in expected[0], f"{task['id']}: 期望文件不该是测试"
+        assert task["issue_file"] in files, f"{task['id']}: issue 文件缺失"
+        assert set(task["tags"]) & {"easy", "hard"}, f"{task['id']}: 缺难度标签"
+
+
+def test_locate_bench_covers_three_groups_and_aggregate(tmp_path: Path) -> None:
+    """基准必须报告三组 + 汇总（单组样本小，汇总才是可读结论）。"""
+    import json
+    import subprocess
+
+    from patchpilot.eval.locate_bench import run_locate_bench
+
+    project = tmp_path / "proj"
+    write(project, "mod.py", "def handler():\n    return 1\n")
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@e.com"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "-A"],
+    ):
+        subprocess.run(cmd, cwd=project, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "修复 handler 的返回值"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+
+    corpus = tmp_path / "loc.json"
+    corpus.write_bytes(
+        json.dumps({"tasks": [_synthetic_task()]}, ensure_ascii=False).encode("utf-8")
+    )
+
+    outcome = run_locate_bench(
+        git_root=project, scope=project, synthetic_path=corpus, history_limit=5
+    )
+
+    groups = {score.group for score in outcome.scores}
+    assert "synthetic" in groups
+    assert "history" in groups
+    assert "all" in groups, "必须有跨组汇总行"
+    assert len([s for s in outcome.scores if s.group == "all"]) >= 2, (
+        "汇总行应对每个配置各有一条"
+    )
+
+
 # ---------------------------------------------------------------- 闭环接入
 
 

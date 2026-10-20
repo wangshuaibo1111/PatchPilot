@@ -5,6 +5,12 @@
 **A. 语料 issue 集**（`eval/fast_corpus.json`）：自然语言描述症状，期望文件 = 含 bug 的模块。
    每道题**物化到临时目录再索引**（语料是内联数据，没有真实目录可索引）。**用户风格**，但样本少。
 
+**A2. 合成集**（`eval/locate_corpus.json`，20 题）：10 个领域 × 2 个难度层，
+   每题 6 个文件、**刻意含名字相近的干扰模块**（`settings`/`schema`/`merger`/`loader`），
+   所以"随便命中一个"不会得分。`easy` 层 issue 直接点名函数，`hard` 层只描述**行为**
+   （更接近真实用户报告）。**合成代码不是真实项目**，但其标定实测：
+   easy 层 Top-1 100%、hard 层 Top-1 20% —— 有真实梯度，不是天花板。
+
 **B. 本仓库提交历史集**：把提交信息当 issue、该提交改动的源码文件当期望。
    真实代码、真实改动，但**信息偏乐观**——提交信息常直接点名函数/文件，比真实用户报告好定位。
    因此 A、B 两组指标**分开报告**，不混成一个数。
@@ -130,6 +136,39 @@ def cases_from_corpus(corpus_path: Path, *, keep_dirs: bool = False) -> list[Loc
         if not keep_dirs:
             # 索引已建好；目录留给基线调用（用完在 run 结束时清理）
             continue
+    return cases
+
+
+def cases_from_locate_corpus(corpus_path: Path) -> list[LocateCase]:
+    """从"合成语料"建题：每题显式给 `expected_files`（比从文件名推导更准确）。"""
+    payload = json.loads(corpus_path.read_text(encoding="utf-8"))
+    cases: list[LocateCase] = []
+    for item in payload.get("tasks", []):
+        files = {str(k): str(v) for k, v in (item.get("files") or {}).items()}
+        issue_rel = str(item.get("issue_file") or "Issue.md")
+        issue = files.get(issue_rel)
+        expected = {str(path) for path in (item.get("expected_files") or [])}
+        if not issue or not expected:
+            continue
+        root = Path(tempfile.mkdtemp(prefix=f"pp-syn-{item['id']}-"))
+        base = root.resolve()
+        for rel, content in files.items():
+            target = (root / rel).resolve()
+            try:
+                target.relative_to(base)
+            except ValueError as exc:
+                raise ValueError(f"{item['id']}: 语料路径逃逸出目标目录: {rel!r}") from exc
+            write_text_lf(target, content)
+        cases.append(
+            LocateCase(
+                id=str(item["id"]),
+                query=issue,
+                index=index_repo(root),
+                expected_files=frozenset(expected),
+                group="synthetic",
+                root=root,
+            )
+        )
     return cases
 
 
@@ -325,34 +364,43 @@ def run_locate_bench(
     git_root: Path,
     scope: Path,
     corpus_path: Path | None = None,
+    synthetic_path: Path | None = None,
     history_limit: int = 40,
     limit: int = 10,
 ) -> BenchOutcome:
-    """跑全部消融配置 × 两个题目组。"""
+    """跑全部消融配置 × 三个题目组（corpus / synthetic / history）。"""
     cases: list[LocateCase] = []
     temp_dirs: list[Path] = []
     if corpus_path is not None and corpus_path.is_file():
         corpus_cases = cases_from_corpus(corpus_path)
         cases.extend(corpus_cases)
         temp_dirs.extend(c.root for c in corpus_cases)
+    if synthetic_path is not None and synthetic_path.is_file():
+        synthetic_cases = cases_from_locate_corpus(synthetic_path)
+        cases.extend(synthetic_cases)
+        temp_dirs.extend(c.root for c in synthetic_cases)
     cases.extend(cases_from_history(git_root=git_root, scope=scope, limit=history_limit))
 
     scores: list[LocateScore] = []
     try:
         for name, config in ABLATIONS:
-            for group in ("corpus", "history"):
-                group_cases = [c for c in cases if c.group == group]
-                if not group_cases:
-                    continue
-                ranked: list[tuple[LocateCase, list[str]]] = []
-                for case in group_cases:
-                    if config is None:
-                        candidates = baseline_rank(case.query, case.root)[:limit]
-                    else:
-                        localizer = Localizer(case.index, config=config)
-                        candidates = localizer.localize_paths(case.query, limit=limit)
-                    ranked.append((case, candidates))
-                scores.append(_score(name, group, ranked=ranked))
+            # 先逐题算一次候选，再按组与"全部"分别汇总——
+            # 汇总行很重要：单组样本仍偏小（6/20/13），跨组加权才看得出整体趋势。
+            per_case: dict[str, list[tuple[LocateCase, list[str]]]] = {}
+            for case in cases:
+                if config is None:
+                    candidates = baseline_rank(case.query, case.root)[:limit]
+                else:
+                    localizer = Localizer(case.index, config=config)
+                    candidates = localizer.localize_paths(case.query, limit=limit)
+                per_case.setdefault(case.group, []).append((case, candidates))
+            for group in ("corpus", "synthetic", "history", "all"):
+                if group == "all":
+                    ranked = [pair for pairs in per_case.values() for pair in pairs]
+                else:
+                    ranked = per_case.get(group, [])
+                if ranked:
+                    scores.append(_score(name, group, ranked=ranked))
     finally:
         for directory in temp_dirs:
             shutil.rmtree(directory, ignore_errors=True)
@@ -366,6 +414,7 @@ __all__ = [
     "LocateScore",
     "baseline_rank",
     "cases_from_corpus",
+    "cases_from_locate_corpus",
     "cases_from_history",
     "run_locate_bench",
 ]

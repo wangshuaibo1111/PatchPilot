@@ -708,6 +708,9 @@ def locate(
     corpus: Path | None = typer.Option(
         None, "--corpus", help="语料 JSON（默认 eval/fast_corpus.json）"
     ),
+    synthetic: Path | None = typer.Option(
+        None, "--synthetic", help="合成语料 JSON（默认 eval/locate_corpus.json）"
+    ),
     history: int = typer.Option(60, "--history", help="从提交历史取多少条提交流程作题"),
     git_root: Path = typer.Option(Path("."), "--git-root", help="git 仓库根"),
     out: Path | None = typer.Option(None, "--out", help="把消融表写成 JSON"),
@@ -727,12 +730,14 @@ def locate(
     if not resolved_scope.is_dir():
         raise typer.BadParameter(f"--scope 不是目录: {resolved_scope}")
     corpus_path = corpus or Path("eval/fast_corpus.json")
+    synthetic_path = synthetic or Path("eval/locate_corpus.json")
 
     with console.status("建索引并跑消融…"):
         outcome = run_locate_bench(
             git_root=resolved_root,
             scope=resolved_scope,
             corpus_path=corpus_path if corpus_path.is_file() else None,
+            synthetic_path=synthetic_path if synthetic_path.is_file() else None,
             history_limit=history,
         )
 
@@ -747,9 +752,25 @@ def locate(
         table.add_row(*[str(cell) for cell in row])
     console.print(table)
 
+    # 相对基线的提升（看"all"汇总行，比单组更有意义）
+    by_key = {(score.config, score.group): score for score in outcome.scores}
+    baseline_all = by_key.get(("基线（P1 现有 locate：符号+子串）", "all"))
+    full_key = next((k for k in by_key if "四路" in k[0] and k[1] == "all"), None)
+    if baseline_all is not None and full_key is not None:
+        full_all = by_key[full_key]
+        console.print(
+            f"[bold]全部 {full_all.total} 题汇总[/bold]：Top-1 "
+            f"{baseline_all.top1:.1%} → [green]{full_all.top1:.1%}[/green]"
+            f"（+{(full_all.top1 - baseline_all.top1) * 100:.1f}pp），"
+            f"Top-5 {baseline_all.top5:.1%} → {full_all.top5:.1%}，"
+            f"MRR {baseline_all.mrr:.3f} → {full_all.mrr:.3f}"
+        )
     console.print(
-        "[dim]注：history 组的提交信息常直接点名函数，比真实用户报告好定位；"
-        "corpus 组样本少（天花板效应）。两组不可混谈。[/dim]"
+        "[dim]注：三组来源不同，**不要混谈**——"
+        "corpus 是自然语言 issue（样本少、天花板）；synthetic 是合成代码"
+        "（easy 层点名函数、hard 层只描述行为）；"
+        "history 的提交信息常直接点名函数（偏乐观）。"
+        "单组 1 题 = 5~17pp，故看汇总行更稳。[/dim]"
     )
     if out is not None:
         payload = [

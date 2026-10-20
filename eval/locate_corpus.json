@@ -1,0 +1,405 @@
+{
+  "image": "patchpilot-sandbox:0.1.0-py312",
+  "tasks": [
+    {
+      "id": "syn-01-easy",
+      "files": {
+        "settings.py": "\"\"\"配置项读取。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef read_setting(config, key):\n    \"\"\"取配置项。\"\"\"\n    return config[key]\n",
+        "schema.py": "\"\"\"配置结构校验。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef require_fields(config, fields):\n    \"\"\"校验必需字段。\"\"\"\n    return [f for f in fields if f not in config]\n",
+        "errors.py": "\"\"\"配置相关异常。\"\"\"\n\nfrom __future__ import annotations\n\n\nclass SettingsError(Exception):\n    \"\"\"配置错误。\"\"\"\n\n\nclass MissingField(SettingsError):\n    \"\"\"缺少必需字段。\"\"\"\n",
+        "merger.py": "\"\"\"合并多份配置。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef merge_settings(*layers):\n    \"\"\"后者覆盖前者。\"\"\"\n    merged = {}\n    for layer in layers:\n        merged.update(layer)\n    return merged\n",
+        "loader.py": "\"\"\"把文本解析成配置字典。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef load_settings(text):\n    \"\"\"解析 key=value 文本；值里含 `=` 时只按第一个 `=` 切分。\"\"\"\n    result = {}\n    for line in text.splitlines():\n        if not line.strip() or line.startswith(\"#\"):\n            continue\n        key, value = line.split(\"=\")\n        result[key.strip()] = value.strip()\n    return result\n",
+        "tests/test_basic.py": "from loader import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`load_settings` 在值里含等号时崩溃：\n\n```\nValueError: too many values to unpack (expected 2)\n```\n\n复现：`load_settings(\"url=a=b\")`。期望解析成 `{'url': 'a=b'}`。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "loader.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-01-hard",
+      "files": {
+        "settings.py": "\"\"\"配置项读取。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef read_setting(config, key):\n    \"\"\"取配置项。\"\"\"\n    return config[key]\n",
+        "schema.py": "\"\"\"配置结构校验。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef require_fields(config, fields):\n    \"\"\"校验必需字段。\"\"\"\n    return [f for f in fields if f not in config]\n",
+        "errors.py": "\"\"\"配置相关异常。\"\"\"\n\nfrom __future__ import annotations\n\n\nclass SettingsError(Exception):\n    \"\"\"配置错误。\"\"\"\n\n\nclass MissingField(SettingsError):\n    \"\"\"缺少必需字段。\"\"\"\n",
+        "merger.py": "\"\"\"合并多份配置。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef merge_settings(*layers):\n    \"\"\"后者覆盖前者。\"\"\"\n    merged = {}\n    for layer in layers:\n        merged.update(layer)\n    return merged\n",
+        "loader.py": "\"\"\"把文本解析成配置字典。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef load_settings(text):\n    \"\"\"解析 key=value 文本；值里含 `=` 时只按第一个 `=` 切分。\"\"\"\n    result = {}\n    for line in text.splitlines():\n        if not line.strip() or line.startswith(\"#\"):\n            continue\n        key, value = line.split(\"=\")\n        result[key.strip()] = value.strip()\n    return result\n",
+        "tests/test_basic.py": "from loader import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "配置文件里把 URL 当值写（`endpoint=http://x?a=1`）时，解析整个失败，报 `ValueError: too many values to unpack`。希望只按第一个等号切分。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "loader.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-02-easy",
+      "files": {
+        "sizes.py": "\"\"\"块大小计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef block_count(total, size):\n    \"\"\"需要几个块。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return (total + size - 1) // size\n",
+        "join.py": "\"\"\"把块拼回去。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef join_blocks(blocks):\n    \"\"\"直接拼接。\"\"\"\n    return \"\".join(blocks)\n",
+        "normalize.py": "\"\"\"文本规范化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize(text):\n    \"\"\"去掉首尾空白。\"\"\"\n    return text.strip()\n",
+        "stats.py": "\"\"\"块统计。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef average_size(blocks):\n    \"\"\"平均块长。\"\"\"\n    return sum(len(b) for b in blocks) / len(blocks) if blocks else 0.0\n",
+        "chunker.py": "\"\"\"按字符数切块。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef split_chunks(text, size):\n    \"\"\"每块最多 size 个字符。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return [text[i : i + size - 1] for i in range(0, len(text), size)]\n",
+        "tests/test_basic.py": "from chunker import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`split_chunks(\"abcdef\", 2)` 返回 `['a', 'c', 'e']`，期望 `['ab', 'cd', 'ef']`。每块都少了一个字符。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "chunker.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-02-hard",
+      "files": {
+        "sizes.py": "\"\"\"块大小计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef block_count(total, size):\n    \"\"\"需要几个块。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return (total + size - 1) // size\n",
+        "join.py": "\"\"\"把块拼回去。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef join_blocks(blocks):\n    \"\"\"直接拼接。\"\"\"\n    return \"\".join(blocks)\n",
+        "normalize.py": "\"\"\"文本规范化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize(text):\n    \"\"\"去掉首尾空白。\"\"\"\n    return text.strip()\n",
+        "stats.py": "\"\"\"块统计。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef average_size(blocks):\n    \"\"\"平均块长。\"\"\"\n    return sum(len(b) for b in blocks) / len(blocks) if blocks else 0.0\n",
+        "chunker.py": "\"\"\"按字符数切块。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef split_chunks(text, size):\n    \"\"\"每块最多 size 个字符。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return [text[i : i + size - 1] for i in range(0, len(text), size)]\n",
+        "tests/test_basic.py": "from chunker import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "文本切块后拼接回去内容变少了：`''.join(split_chunks(s, 2)) != s`。看起来每块都少取了一个字符。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "chunker.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-03-easy",
+      "files": {
+        "sort_keys.py": "\"\"\"排序键。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef by_score(pair):\n    \"\"\"按分数降序的键。\"\"\"\n    return -pair[1]\n",
+        "scores.py": "\"\"\"分数归一化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize_scores(items):\n    \"\"\"把分数缩到 0..1。\"\"\"\n    top = max((s for _, s in items), default=0) or 1\n    return [(n, s / top) for n, s in items]\n",
+        "labels.py": "\"\"\"名次标签。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef label(position):\n    \"\"\"第几名的展示文案。\"\"\"\n    return f\"#{position}\"\n",
+        "filters.py": "\"\"\"过滤低分项。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef above(items, threshold):\n    \"\"\"只保留分数 >= 阈值。\"\"\"\n    return [(n, s) for n, s in items if s >= threshold]\n",
+        "ranking.py": "\"\"\"返回前 N 名。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef top_n(items, n):\n    \"\"\"按分数从高到低取前 n。\"\"\"\n    if n <= 0:\n        return []\n    ordered = sorted(items, key=lambda pair: pair[1])\n    return [name for name, _score in ordered[:n]]\n",
+        "tests/test_basic.py": "from ranking import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`top_n([('a', 1), ('b', 3), ('c', 2)], 2)` 返回 `['a', 'c']`，期望 `['b', 'c']`。返回的是分数**最低**的几个。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "ranking.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-03-hard",
+      "files": {
+        "sort_keys.py": "\"\"\"排序键。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef by_score(pair):\n    \"\"\"按分数降序的键。\"\"\"\n    return -pair[1]\n",
+        "scores.py": "\"\"\"分数归一化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize_scores(items):\n    \"\"\"把分数缩到 0..1。\"\"\"\n    top = max((s for _, s in items), default=0) or 1\n    return [(n, s / top) for n, s in items]\n",
+        "labels.py": "\"\"\"名次标签。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef label(position):\n    \"\"\"第几名的展示文案。\"\"\"\n    return f\"#{position}\"\n",
+        "filters.py": "\"\"\"过滤低分项。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef above(items, threshold):\n    \"\"\"只保留分数 >= 阈值。\"\"\"\n    return [(n, s) for n, s in items if s >= threshold]\n",
+        "ranking.py": "\"\"\"返回前 N 名。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef top_n(items, n):\n    \"\"\"按分数从高到低取前 n。\"\"\"\n    if n <= 0:\n        return []\n    ordered = sorted(items, key=lambda pair: pair[1])\n    return [name for name, _score in ordered[:n]]\n",
+        "tests/test_basic.py": "from ranking import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "排行榜取前两名时，拿到的是垫底的两个。排序方向反了，但 `n <= 0` 返回空列表的行为是对的。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "ranking.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-04-easy",
+      "files": {
+        "keys.py": "\"\"\"缓存键构造。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef cache_key(*parts):\n    \"\"\"用冒号连接各段。\"\"\"\n    return \":\".join(str(p) for p in parts)\n",
+        "clock.py": "\"\"\"时间源。\"\"\"\n\nfrom __future__ import annotations\n\n\nimport time\n\n\ndef now():\n    \"\"\"当前时间戳。\"\"\"\n    return time.monotonic()\n",
+        "store.py": "\"\"\"底层字典存储。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef put(table, key, value):\n    \"\"\"写入。\"\"\"\n    table[key] = value\n    return value\n",
+        "sweeper.py": "\"\"\"清理过期项。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef sweep(store, ttl, clock):\n    \"\"\"删除过期条目。\"\"\"\n    for key in [k for k, (t, _) in store.items() if clock() - t >= ttl]:\n        del store[key]\n    return len(store)\n",
+        "cache.py": "\"\"\"带过期的缓存。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom clock import now\n\n\ndef remember(store, key, factory, ttl):\n    \"\"\"命中且未过期则复用，否则重新计算。\"\"\"\n    entry = store.get(key)\n    if entry is not None and now() - entry[0] > ttl:\n        return entry[1]\n    value = factory()\n    store[key] = (now(), value)\n    return value\n",
+        "tests/test_basic.py": "from cache import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`remember` 的 TTL 判断写反了：未过期时反而重算，过期后却命中旧值。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "cache.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-04-hard",
+      "files": {
+        "keys.py": "\"\"\"缓存键构造。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef cache_key(*parts):\n    \"\"\"用冒号连接各段。\"\"\"\n    return \":\".join(str(p) for p in parts)\n",
+        "clock.py": "\"\"\"时间源。\"\"\"\n\nfrom __future__ import annotations\n\n\nimport time\n\n\ndef now():\n    \"\"\"当前时间戳。\"\"\"\n    return time.monotonic()\n",
+        "store.py": "\"\"\"底层字典存储。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef put(table, key, value):\n    \"\"\"写入。\"\"\"\n    table[key] = value\n    return value\n",
+        "sweeper.py": "\"\"\"清理过期项。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef sweep(store, ttl, clock):\n    \"\"\"删除过期条目。\"\"\"\n    for key in [k for k, (t, _) in store.items() if clock() - t >= ttl]:\n        del store[key]\n    return len(store)\n",
+        "cache.py": "\"\"\"带过期的缓存。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom clock import now\n\n\ndef remember(store, key, factory, ttl):\n    \"\"\"命中且未过期则复用，否则重新计算。\"\"\"\n    entry = store.get(key)\n    if entry is not None and now() - entry[0] > ttl:\n        return entry[1]\n    value = factory()\n    store[key] = (now(), value)\n    return value\n",
+        "tests/test_basic.py": "from cache import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "缓存设了 60 秒过期，但一秒内连续两次取到的是**不同**对象，而睡了很久之后取到的却是旧对象——过期判断的方向好像反了。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "cache.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-05-easy",
+      "files": {
+        "delays.py": "\"\"\"退避间隔。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef backoff(attempt, base=0.01):\n    \"\"\"指数退避。\"\"\"\n    return base * (2 ** attempt)\n",
+        "predicates.py": "\"\"\"哪些异常可重试。\"\"\"\n\nfrom __future__ import annotations\n\n\nRETRYABLE = (TimeoutError, ConnectionError)\n\n\ndef is_retryable(exc):\n    \"\"\"是否值得重试。\"\"\"\n    return isinstance(exc, RETRYABLE)\n",
+        "stats.py": "\"\"\"重试计数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef record(stats, attempt):\n    \"\"\"累计每轮次数。\"\"\"\n    stats[attempt] = stats.get(attempt, 0) + 1\n    return stats\n",
+        "logging_utils.py": "\"\"\"日志辅助。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef describe(exc):\n    \"\"\"异常单行描述。\"\"\"\n    return f'{type(exc).__name__}: {exc}'\n",
+        "retry.py": "\"\"\"重试执行器。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom delays import backoff\nfrom predicates import is_retryable\n\n\ndef call_with_retry(func, attempts, sleep):\n    \"\"\"失败则按退避重试，直到成功或用尽次数。\"\"\"\n    last = None\n    for attempt in range(attempts):\n        try:\n            return func()\n        except Exception as exc:\n            if not is_retryable(exc) or attempt == attempts - 1:\n                raise\n            last = exc\n            sleep(backoff(attempt))\n    return None\n",
+        "tests/test_basic.py": "from retry import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`call_with_retry` 在最后一次失败后返回了 `None`，而不是抛出原始异常。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "retry.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-05-hard",
+      "files": {
+        "delays.py": "\"\"\"退避间隔。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef backoff(attempt, base=0.01):\n    \"\"\"指数退避。\"\"\"\n    return base * (2 ** attempt)\n",
+        "predicates.py": "\"\"\"哪些异常可重试。\"\"\"\n\nfrom __future__ import annotations\n\n\nRETRYABLE = (TimeoutError, ConnectionError)\n\n\ndef is_retryable(exc):\n    \"\"\"是否值得重试。\"\"\"\n    return isinstance(exc, RETRYABLE)\n",
+        "stats.py": "\"\"\"重试计数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef record(stats, attempt):\n    \"\"\"累计每轮次数。\"\"\"\n    stats[attempt] = stats.get(attempt, 0) + 1\n    return stats\n",
+        "logging_utils.py": "\"\"\"日志辅助。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef describe(exc):\n    \"\"\"异常单行描述。\"\"\"\n    return f'{type(exc).__name__}: {exc}'\n",
+        "retry.py": "\"\"\"重试执行器。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom delays import backoff\nfrom predicates import is_retryable\n\n\ndef call_with_retry(func, attempts, sleep):\n    \"\"\"失败则按退避重试，直到成功或用尽次数。\"\"\"\n    last = None\n    for attempt in range(attempts):\n        try:\n            return func()\n        except Exception as exc:\n            if not is_retryable(exc) or attempt == attempts - 1:\n                raise\n            last = exc\n            sleep(backoff(attempt))\n    return None\n",
+        "tests/test_basic.py": "from retry import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "重试三次全失败时，调用方收到的是 `None` 而不是那个 `TimeoutError`，导致上层完全不知道真实原因。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "retry.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-06-easy",
+      "files": {
+        "bounds.py": "\"\"\"边界计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef clamp(value, low, high):\n    \"\"\"夹在区间内。\"\"\"\n    return max(low, min(value, high))\n",
+        "totals.py": "\"\"\"总页数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef page_count(total, size):\n    \"\"\"总页数。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return (total + size - 1) // size\n",
+        "links.py": "\"\"\"翻页链接。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef next_link(number, total):\n    \"\"\"下一页链接（末页为 None）。\"\"\"\n    return None if number >= total else f'?page={number + 1}'\n",
+        "validate.py": "\"\"\"参数校验。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef require_positive(value, name):\n    \"\"\"必须为正整数。\"\"\"\n    if not isinstance(value, int) or value <= 0:\n        raise ValueError(f'{name} 必须为正整数')\n    return value\n",
+        "paging.py": "\"\"\"切片分页。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef page(items, number, size):\n    \"\"\"取第 number 页（从 1 开始）。\"\"\"\n    start = number * size\n    return items[start : start + size]\n",
+        "tests/test_basic.py": "from paging import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`page(list(range(10)), 1, 3)` 返回空列表，期望 `[0, 1, 2]`。第一页拿不到数据。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "paging.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-06-hard",
+      "files": {
+        "bounds.py": "\"\"\"边界计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef clamp(value, low, high):\n    \"\"\"夹在区间内。\"\"\"\n    return max(low, min(value, high))\n",
+        "totals.py": "\"\"\"总页数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef page_count(total, size):\n    \"\"\"总页数。\"\"\"\n    if size <= 0:\n        raise ValueError('size 必须为正')\n    return (total + size - 1) // size\n",
+        "links.py": "\"\"\"翻页链接。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef next_link(number, total):\n    \"\"\"下一页链接（末页为 None）。\"\"\"\n    return None if number >= total else f'?page={number + 1}'\n",
+        "validate.py": "\"\"\"参数校验。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef require_positive(value, name):\n    \"\"\"必须为正整数。\"\"\"\n    if not isinstance(value, int) or value <= 0:\n        raise ValueError(f'{name} 必须为正整数')\n    return value\n",
+        "paging.py": "\"\"\"切片分页。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef page(items, number, size):\n    \"\"\"取第 number 页（从 1 开始）。\"\"\"\n    start = number * size\n    return items[start : start + size]\n",
+        "tests/test_basic.py": "from paging import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "分页接口的第一页总是空的，从第二页开始才正常。看起来起始下标算错了（页号是从 1 开始的）。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "paging.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-07-easy",
+      "files": {
+        "types.py": "\"\"\"类型判断辅助。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef is_iterable(value):\n    \"\"\"是否可迭代但不是字符串。\"\"\"\n    return hasattr(value, '__iter__') and not isinstance(value, str)\n",
+        "messages.py": "\"\"\"错误文案。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef missing_message(fields):\n    \"\"\"把缺失字段拼成一句。\"\"\"\n    return '缺少字段: ' + ', '.join(sorted(fields))\n",
+        "coercion.py": "\"\"\"类型转换。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef to_int(value):\n    \"\"\"尽量转成整数。\"\"\"\n    try:\n        return int(value)\n    except (TypeError, ValueError):\n        return None\n",
+        "normalize.py": "\"\"\"键名规范化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize_keys(payload):\n    \"\"\"键名去空白并小写。\"\"\"\n    return {str(k).strip().lower(): v for k, v in payload.items()}\n",
+        "validator.py": "\"\"\"必填校验。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom messages import missing_message\n\n\ndef validate(payload, required):\n    \"\"\"缺失必填项则抛 ValueError。\"\"\"\n    missing = []\n    if missing:\n        raise ValueError(missing_message(missing))\n    return payload\n",
+        "tests/test_basic.py": "from validator import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`validate({'a': 1}, ['a', 'b'])` 没有抛错，而是原样返回了入参。缺少字段时应当报错。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "validator.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-07-hard",
+      "files": {
+        "types.py": "\"\"\"类型判断辅助。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef is_iterable(value):\n    \"\"\"是否可迭代但不是字符串。\"\"\"\n    return hasattr(value, '__iter__') and not isinstance(value, str)\n",
+        "messages.py": "\"\"\"错误文案。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef missing_message(fields):\n    \"\"\"把缺失字段拼成一句。\"\"\"\n    return '缺少字段: ' + ', '.join(sorted(fields))\n",
+        "coercion.py": "\"\"\"类型转换。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef to_int(value):\n    \"\"\"尽量转成整数。\"\"\"\n    try:\n        return int(value)\n    except (TypeError, ValueError):\n        return None\n",
+        "normalize.py": "\"\"\"键名规范化。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef normalize_keys(payload):\n    \"\"\"键名去空白并小写。\"\"\"\n    return {str(k).strip().lower(): v for k, v in payload.items()}\n",
+        "validator.py": "\"\"\"必填校验。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom messages import missing_message\n\n\ndef validate(payload, required):\n    \"\"\"缺失必填项则抛 ValueError。\"\"\"\n    missing = []\n    if missing:\n        raise ValueError(missing_message(missing))\n    return payload\n",
+        "tests/test_basic.py": "from validator import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "提交表单少填了一个必填项，接口却返回 200 并原样回显数据，没有给出任何错误文案。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "validator.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-08-easy",
+      "files": {
+        "codec.py": "\"\"\"键值编解码。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef encode_pair(key, value):\n    \"\"\"编码成一个键值对字符串。\"\"\"\n    return f'{key}={value}'\n",
+        "sorting.py": "\"\"\"稳定排序。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef sorted_pairs(pairs):\n    \"\"\"按 key 排序，保持同 key 的原有顺序。\"\"\"\n    return sorted(pairs, key=lambda pair: pair[0])\n",
+        "parsing.py": "\"\"\"反向解析。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef loads(text):\n    \"\"\"解析回字典（与 dumps 互逆）。\"\"\"\n    result = {}\n    for line in text.splitlines():\n        if not line:\n            continue\n        key, _, value = line.partition(\"=\")\n        result[key] = value\n    return result\n",
+        "escaping.py": "\"\"\"转义换行。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef escape(value):\n    \"\"\"把换行替换成字面量。\"\"\"\n    return str(value).replace('\\n', '\\\\n')\n",
+        "serializer.py": "\"\"\"把字典序列化成行文本。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom codec import encode_pair\nfrom sorting import sorted_pairs\n\n\ndef dumps(payload):\n    \"\"\"每行一个 key=value，按 key 排序。\"\"\"\n    return '\\n'.join(encode_pair(k, v) for k, v in payload.items())\n",
+        "tests/test_basic.py": "from serializer import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`dumps` 输出的顺序不稳定：同样的字典两次调用得到不同的行序。应当按 key 排序后再输出。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "serializer.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-08-hard",
+      "files": {
+        "codec.py": "\"\"\"键值编解码。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef encode_pair(key, value):\n    \"\"\"编码成一个键值对字符串。\"\"\"\n    return f'{key}={value}'\n",
+        "sorting.py": "\"\"\"稳定排序。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef sorted_pairs(pairs):\n    \"\"\"按 key 排序，保持同 key 的原有顺序。\"\"\"\n    return sorted(pairs, key=lambda pair: pair[0])\n",
+        "parsing.py": "\"\"\"反向解析。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef loads(text):\n    \"\"\"解析回字典（与 dumps 互逆）。\"\"\"\n    result = {}\n    for line in text.splitlines():\n        if not line:\n            continue\n        key, _, value = line.partition(\"=\")\n        result[key] = value\n    return result\n",
+        "escaping.py": "\"\"\"转义换行。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef escape(value):\n    \"\"\"把换行替换成字面量。\"\"\"\n    return str(value).replace('\\n', '\\\\n')\n",
+        "serializer.py": "\"\"\"把字典序列化成行文本。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom codec import encode_pair\nfrom sorting import sorted_pairs\n\n\ndef dumps(payload):\n    \"\"\"每行一个 key=value，按 key 排序。\"\"\"\n    return '\\n'.join(encode_pair(k, v) for k, v in payload.items())\n",
+        "tests/test_basic.py": "from serializer import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "序列化结果写到文件里，两次运行 diff 总是不一致（内容相同但行的顺序变了），导致下游的缓存全部失效。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "serializer.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-09-easy",
+      "files": {
+        "intervals.py": "\"\"\"间隔计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef between(start, end, count):\n    \"\"\"把区间等分。\"\"\"\n    if count <= 0:\n        raise ValueError('count 必须为正')\n    step = (end - start) / count\n    return [start + i * step for i in range(count)]\n",
+        "windows.py": "\"\"\"时间窗。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef window(now, size):\n    \"\"\"以 now 结尾、宽 size 的窗口。\"\"\"\n    return (now - size, now)\n",
+        "clock.py": "\"\"\"时间源。\"\"\"\n\nfrom __future__ import annotations\n\n\nimport time\n\n\ndef wall():\n    \"\"\"墙上时钟。\"\"\"\n    return time.time()\n",
+        "dedupe.py": "\"\"\"去重。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef unique(values):\n    \"\"\"保序去重。\"\"\"\n    seen = []\n    for value in values:\n        if value not in seen:\n            seen.append(value)\n    return seen\n",
+        "scheduler.py": "\"\"\"按窗口触发任务。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom intervals import between\nfrom windows import window\n\n\ndef ticks(now, size, count):\n    \"\"\"返回窗口内 count 个触发点。\"\"\"\n    low, high = window(now, size)\n    return between(low, high + size / count, count)\n",
+        "tests/test_basic.py": "from scheduler import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`ticks` 返回的触发点里包含一个**未来**的时间点（大于 now），应当全部落在窗口内。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "scheduler.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-09-hard",
+      "files": {
+        "intervals.py": "\"\"\"间隔计算。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef between(start, end, count):\n    \"\"\"把区间等分。\"\"\"\n    if count <= 0:\n        raise ValueError('count 必须为正')\n    step = (end - start) / count\n    return [start + i * step for i in range(count)]\n",
+        "windows.py": "\"\"\"时间窗。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef window(now, size):\n    \"\"\"以 now 结尾、宽 size 的窗口。\"\"\"\n    return (now - size, now)\n",
+        "clock.py": "\"\"\"时间源。\"\"\"\n\nfrom __future__ import annotations\n\n\nimport time\n\n\ndef wall():\n    \"\"\"墙上时钟。\"\"\"\n    return time.time()\n",
+        "dedupe.py": "\"\"\"去重。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef unique(values):\n    \"\"\"保序去重。\"\"\"\n    seen = []\n    for value in values:\n        if value not in seen:\n            seen.append(value)\n    return seen\n",
+        "scheduler.py": "\"\"\"按窗口触发任务。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom intervals import between\nfrom windows import window\n\n\ndef ticks(now, size, count):\n    \"\"\"返回窗口内 count 个触发点。\"\"\"\n    low, high = window(now, size)\n    return between(low, high + size / count, count)\n",
+        "tests/test_basic.py": "from scheduler import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "定时任务偶尔会在「还没到」的时间点提前触发一次，看起来触发点列表的最后一个越过了当前时刻。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "scheduler.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    },
+    {
+      "id": "syn-10-easy",
+      "files": {
+        "clean.py": "\"\"\"数据清洗。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef positive(values):\n    \"\"\"只保留正数。\"\"\"\n    return [v for v in values if v > 0]\n",
+        "rounding.py": "\"\"\"四舍五入。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef round_half_up(value, digits=2):\n    \"\"\"常规四舍五入。\"\"\"\n    return round(value + 1e-12, digits)\n",
+        "quartiles.py": "\"\"\"分位数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef median(values):\n    \"\"\"中位数。\"\"\"\n    ordered = sorted(values)\n    mid = len(ordered) // 2\n    if len(ordered) % 2:\n        return ordered[mid]\n    return (ordered[mid - 1] + ordered[mid]) / 2\n",
+        "formatting.py": "\"\"\"报表格式。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef fmt(value):\n    \"\"\"保留两位小数。\"\"\"\n    return f\"{value:.2f}\"\n",
+        "summary.py": "\"\"\"汇总统计。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom clean import positive\n\n\ndef mean(values):\n    \"\"\"非正数会被剔除后求平均。\"\"\"\n    cleaned = positive(values)\n    return sum(cleaned) / len(cleaned)\n",
+        "tests/test_basic.py": "from summary import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "`mean([0, 0, 0])` 抛 `ZeroDivisionError`，期望返回 `0.0`。空数据要能兜住。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "summary.py"
+      ],
+      "tags": [
+        "synthetic",
+        "easy"
+      ]
+    },
+    {
+      "id": "syn-10-hard",
+      "files": {
+        "clean.py": "\"\"\"数据清洗。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef positive(values):\n    \"\"\"只保留正数。\"\"\"\n    return [v for v in values if v > 0]\n",
+        "rounding.py": "\"\"\"四舍五入。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef round_half_up(value, digits=2):\n    \"\"\"常规四舍五入。\"\"\"\n    return round(value + 1e-12, digits)\n",
+        "quartiles.py": "\"\"\"分位数。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef median(values):\n    \"\"\"中位数。\"\"\"\n    ordered = sorted(values)\n    mid = len(ordered) // 2\n    if len(ordered) % 2:\n        return ordered[mid]\n    return (ordered[mid - 1] + ordered[mid]) / 2\n",
+        "formatting.py": "\"\"\"报表格式。\"\"\"\n\nfrom __future__ import annotations\n\n\ndef fmt(value):\n    \"\"\"保留两位小数。\"\"\"\n    return f\"{value:.2f}\"\n",
+        "summary.py": "\"\"\"汇总统计。\"\"\"\n\nfrom __future__ import annotations\n\n\nfrom clean import positive\n\n\ndef mean(values):\n    \"\"\"非正数会被剔除后求平均。\"\"\"\n    cleaned = positive(values)\n    return sum(cleaned) / len(cleaned)\n",
+        "tests/test_basic.py": "from summary import *  # noqa: F403\n\n\ndef test_smoke():\n    assert True\n",
+        "Issue.md": "全是零或负数的数据做汇总时直接崩了，分母变成 0。清洗之后应为空，这种情况要返回 0 而不是报错。"
+      },
+      "issue_file": "Issue.md",
+      "expected_files": [
+        "summary.py"
+      ],
+      "tags": [
+        "synthetic",
+        "hard"
+      ]
+    }
+  ]
+}
