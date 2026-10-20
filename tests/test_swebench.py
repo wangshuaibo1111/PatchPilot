@@ -59,7 +59,7 @@ def test_load_subset_reads_instances(tmp_path: Path) -> None:
 
 def test_load_subset_rejects_missing_field(tmp_path: Path) -> None:
     payload = _instance()
-    del payload["image"]
+    del payload["base_commit"]
     path = tmp_path / "subset.json"
     write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
 
@@ -89,7 +89,10 @@ def test_shipped_subset_is_calibrated_and_documents_limits() -> None:
     assert instances, "子集不能为空"
 
     for item in instances:
-        assert item["image"], f"{item['instance_id']}: 必须记录所用镜像"
+        # 二选一：docker 模式给镜像，宿主解释器模式给 python（旧 Python 用后者）
+        assert item.get("image") or item.get("python"), (
+            f"{item['instance_id']}: 必须记录运行方式（image 或 python）"
+        )
         assert item["fail_to_pass"], f"{item['instance_id']}: 必须有判据测试"
         assert item["problem"].strip(), f"{item['instance_id']}: 必须有 issue 文本"
 
@@ -186,3 +189,60 @@ def test_swe_instance_is_frozen() -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         instance.instance_id = "y"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------- 运行方式与占位展开
+
+
+def test_load_subset_accepts_host_python_without_image(tmp_path: Path) -> None:
+    """宿主解释器模式不需要镜像（旧 Python 走这条路）。"""
+    payload = _instance()
+    payload.pop("image")
+    payload["python"] = "python3.9"
+    path = tmp_path / "subset.json"
+    write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
+
+    instances = load_subset(path)
+
+    assert instances[0].python == "python3.9"
+    assert instances[0].image == ""
+
+
+def test_load_subset_rejects_instance_without_any_runner(tmp_path: Path) -> None:
+    payload = _instance()
+    payload.pop("image")
+    path = tmp_path / "subset.json"
+    write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
+
+    with pytest.raises(SwebenchError, match="image"):
+        load_subset(path)
+
+
+def test_load_subset_expands_env_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """入库的子集用 `${VAR}` 占位（本机绝对路径不该进版本库）。"""
+    monkeypatch.setenv("PP_TEST_PY39", "/opt/py39/bin/python")
+    payload = _instance()
+    payload.pop("image")
+    payload["python"] = "${PP_TEST_PY39}"
+    path = tmp_path / "subset.json"
+    write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
+
+    instances = load_subset(path)
+
+    assert instances[0].python == "/opt/py39/bin/python"
+
+
+def test_load_subset_reports_unexpanded_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PP_TEST_MISSING", raising=False)
+    payload = _instance()
+    payload.pop("image")
+    payload["python"] = "${PP_TEST_MISSING}"
+    path = tmp_path / "subset.json"
+    write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
+
+    with pytest.raises(SwebenchError, match="未展开"):
+        load_subset(path)

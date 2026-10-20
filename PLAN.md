@@ -40,7 +40,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**564 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
-| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— `pass@1 = 1/2 = 50%`（`pallets__flask-4992` 1 轮修好、`5063` 补丁打不上），**N=2 仅链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
+| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— **已标定 11 题**（宿主 conda py3.9 解释器），实测 `pass@1 = 0/11`，失败集中在**补丁无法应用 7/11**（prompt 上下文不足，非 harness 故障）；另在 flask 子集上 `1/2`；**均属链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
@@ -339,6 +339,47 @@ D:\Code\PatchPilot\
   - `pytest -o addopts=""` → **558 passed + 4 skipped**，0 failed / 0 error
   - `pp locate` → 消融表落盘 `eval/locate.json`
 - **审查**：按节拍，P2 属一个新阶段，留待与该阶段一并复审
+- **提交**：见本批提交
+
+### [2026-10-17] **解锁旧 Python 环境**：SWE-bench 子集 2 → **11 题**；实测 0/11 并定位真因
+
+- **怎么解锁的（关键是不依赖镜像仓库）**：镜像仓库 403 / Docker Hub 超时拿不到 `python:3.9`
+  基础镜像，但 **conda 可用且 conda/pypi 可达** → 用
+  `conda create -p .tmp/py39env python=3.9` 建出 3.9 解释器，装
+  `pytest==7.4.4 pytest-timeout==2.3.1 mpmath`，再给 harness 加**宿主解释器模式**
+  （`run_tests_on_host`）。实测 `sympy 1.1.2.dev` 在 3.9 上 `import` 成功——`distutils` 回来了。
+- **安全取舍（已写进模块说明与子集 notes）**：宿主运行**没有容器隔离**，
+  只靠"一次性克隆 + 超时 + 专用解释器"。被评测补丁由本项目模型产出、打在一次性克隆上，
+  故仅用于**评测**；生产修复路径仍走容器沙箱。
+- **可移植性**：入库子集用 `${PP_SWEBENCH_PYTHON}` 占位（本机绝对路径不该进版本库），
+  `load_subset` 负责展开；未设置时报清晰错误。
+- **标定结果：2 → 11 题**（全是 sympy；flask/pylint 因 py39 环境缺依赖被剔除，
+  其中 `sympy__sympy-12236` 因"打补丁前就全绿"被剔除——**标定门在正常工作**）。
+- **实测结果：pass@1 = 0/11**，失败分类：
+  | 失败类型 | 题数 |
+  |---|---|
+  | **候选补丁无法应用** | **7** |
+  | FAIL_TO_PASS 仍有失败 | 3 |
+  | 模型没有产出补丁 | 1 |
+- **真因（这是本轮最有价值的发现）**：瓶颈**不是 harness**，而是**补丁格式与上下文供给**。
+  prompt 只给每个候选文件 2.5KB 片段，模型无法复现精确的上下文行与行号，
+  于是 `git apply` 一律 `patch does not apply`。FastEval 那 6 题全是十几行的小文件，
+  所以从未暴露这个问题——**这是"小样本全绿"的又一个反例**。
+- **单题耗时画像**（据此做的两处提速）：建索引 41s、模型 112s；
+  改为**索引按仓库复用** + 片段 2.5KB/2 文件后，首题 ~103s、后续 ~70s，
+  11 题从"跑不完"降到约 13 分钟。
+  **该缓存是评测专用取舍**（同一仓库不同 commit 复用索引，文件布局变化很小），
+  生产路径不用它。
+- **下一步（已写成明确工程项，不是空话）**：给模型**带行号的精确片段**，
+  或改用 search/replace 编辑格式（`<<<<<<< SEARCH` / `=======` / `>>>>>>>`），
+  并在应用端做 fuzz（`git apply -C1` 或 `patch -p1 --fuzz=3`）。
+  这三者任一都能把"补丁无法应用"这 7 题变成真正被评测的题。
+- **文件**：`src/patchpilot/eval/swebench.py`（宿主模式 + 索引缓存 + 占位展开）、
+  `src/patchpilot/cli.py`、`eval/swebench_subset.json`（11 题 + 失败分类 + 结果）、
+  `eval/swebench_report.json`、`tests/test_swebench.py`（14 例）、`PLAN.md`、`README.md`
+- **验证**：`ruff` 全绿；`pytest` 见本批冻结自证；
+  `pp swebench` 真机复跑（11 题，约 13 分钟）得到同一结果。
+- **审查**：留待该阶段一并复审
 - **提交**：见本批提交
 
 ### [2026-10-17] **SWE-bench 子集评测**：带准入标定门，真实 instance pass@1 = 1/2

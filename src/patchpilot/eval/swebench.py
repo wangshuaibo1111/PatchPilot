@@ -60,6 +60,11 @@ class SweInstance:
     pass_to_pass: tuple[str, ...] = ()
     gold_patch: str = ""
     notes: str = ""
+    #: 若给出**解释器路径**，则在宿主用该解释器跑测试（解锁旧 Python：
+    #: 镜像仓库不可用时拿不到旧版本基础镜像）。空表示走 docker。
+    python: str = ""
+    #: 仓库内需要加进 PYTHONPATH 的子目录（flask 是 `src`，sympy 是空）
+    pythonpath: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,21 +119,44 @@ class SweReport:
         }
 
 
+def _expand(value: str) -> str:
+    r"""展开 `${VAR}` 占位；未设置时报错，而不是静默传空字符串。"""
+    import os
+
+    expanded = os.path.expandvars(value)
+    if "$" in expanded:
+        raise SwebenchError(
+            f"解释器路径未展开（占位变量未设置）: {value}。"
+            "请设置环境变量，例如 PP_SWEBENCH_PYTHON=<python3.9 路径>"
+        )
+    return expanded
+
+
 def load_subset(path: Path) -> list[SweInstance]:
-    """读子集 JSON。文件里的题必须**已经**通过标定（见模块说明）。"""
+    r"""读子集 JSON。文件里的题必须**已经**通过标定（见模块说明）。
+
+    解释器路径里的 `${VAR}` 会被展开（子集入库时用环境变量占位，
+    因为本机绝对路径不该进版本库）；占位变量未设置时报清晰错误。
+
+    `image` 在**宿主解释器模式**下可省略（`python` 非空时不需要镜像）。
+    """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     instances: list[SweInstance] = []
     for item in payload.get("instances", []):
-        required = {"instance_id", "repo", "base_commit", "image", "fail_to_pass", "problem"}
+        required = {"instance_id", "repo", "base_commit", "fail_to_pass", "problem"}
         missing = required - set(item)
         if missing:
             raise SwebenchError(f"{item.get('instance_id', '?')}: 缺字段 {sorted(missing)}")
+        if not item.get("image") and not item.get("python"):
+            raise SwebenchError(
+                f"{item.get('instance_id', '?')}: 必须给出 `image` 或 `python` 之一"
+            )
         instances.append(
             SweInstance(
                 instance_id=str(item["instance_id"]),
                 repo=str(item["repo"]),
                 base_commit=str(item["base_commit"]),
-                image=str(item["image"]),
+                image=str(item.get("image") or ""),
                 fail_to_pass=tuple(item["fail_to_pass"]),
                 problem=str(item["problem"]),
                 test_patch=str(item.get("test_patch") or ""),
@@ -136,6 +164,8 @@ def load_subset(path: Path) -> list[SweInstance]:
                 pass_to_pass=tuple(item.get("pass_to_pass") or ()),
                 gold_patch=str(item.get("gold_patch") or ""),
                 notes=str(item.get("notes") or ""),
+                python=_expand(str(item.get("python") or "")),
+                pythonpath=str(item.get("pythonpath") or ""),
             )
         )
     if not instances:
@@ -250,26 +280,73 @@ def run_tests_in_sandbox(
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def run_tests_on_host(
+    python: str,
+    repo_dir: Path,
+    node_ids: tuple[str, ...],
+    *,
+    pythonpath: str = "",
+    timeout_s: int = 300,
+) -> tuple[int, str]:
+    """在**宿主**上用指定解释器跑测试（评测专用，见模块说明的安全取舍）。
+
+    `pythonpath` 是仓库内子目录（如 flask 的 `src`）——不加的话 `import flask`
+    会拿到宿主环境里装的那个 flask，而不是被测的这份源码。
+    """
+    import os
+
+    repo_dir = Path(repo_dir).resolve()
+    env = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
+    if pythonpath:
+        env["PYTHONPATH"] = str(repo_dir / pythonpath)
+    else:
+        env["PYTHONPATH"] = str(repo_dir)
+    proc = subprocess.run(
+        [python, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         f"--timeout={timeout_s}", *node_ids],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        env=env,
+    )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def run_tests(
+    instance: SweInstance, repo_dir: Path, node_ids: tuple[str, ...]
+) -> tuple[int, str]:
+    """按实例配置选运行方式：有 `python` 走宿主解释器，否则走 docker 沙箱。"""
+    if instance.python:
+        return run_tests_on_host(
+            instance.python, repo_dir, node_ids, pythonpath=instance.pythonpath
+        )
+    return run_tests_in_sandbox(instance.image, repo_dir, node_ids)
+
+
 def calibrate(
     instance: SweInstance,
     *,
     work_root: Path,
-    container_pythonpath: str | None = None,
+    container_pythonpath: str | None = None,  # 已由 instance.pythonpath 取代，保留兼容
 ) -> tuple[bool, str]:
     """**准入标定**：gold patch 必须让 FAIL_TO_PASS 从失败翻成通过。"""
     repo_dir = prepare_repo(instance, work_root)
     reset_repo(repo_dir, instance, keep_test_patch=True)
     node_ids = resolve_node_ids(repo_dir, instance.fail_to_pass)
-    before_rc, before_out = run_tests_in_sandbox(
-        instance.image, repo_dir, node_ids, container_pythonpath=container_pythonpath
-    )
+    before_rc, before_out = run_tests(instance, repo_dir, node_ids)
     if before_rc == 0:
         return False, "FAIL_TO_PASS 在打补丁前就全绿（题目前提不成立）"
     if not apply_patch_text(repo_dir, instance.gold_patch):
         return False, "gold patch 无法应用"
-    after_rc, after_out = run_tests_in_sandbox(
-        instance.image, repo_dir, node_ids, container_pythonpath=container_pythonpath
-    )
+    after_rc, after_out = run_tests(instance, repo_dir, node_ids)
     reset_repo(repo_dir, instance, keep_test_patch=False)
     if after_rc != 0:
         tail = "\n".join(after_out.strip().splitlines()[-4:])
@@ -277,7 +354,23 @@ def calibrate(
     return True, "标定通过（失败 → 通过）"
 
 
-def build_repair_prompt(instance: SweInstance, repo_dir: Path) -> tuple[str, int]:
+#: 索引缓存：`instance_id 所属仓库 -> CodeIndex`。
+#:
+#: **为什么允许跨 commit 复用**（评测专用取舍）：建一次 sympy 索引要 ~40s，
+#: 11 道题就是 7 分钟。这些 instance 的 base_commit 虽不同，但同一仓库内文件布局
+#: 变化很小，定位质量的影响远小于"跑不完 11 题"的代价。**生产路径不用这个缓存**，
+#: 每次修复都对新工作区重建索引。
+_INDEX_CACHE: dict[str, object] = {}
+
+
+def build_repair_prompt(
+    instance: SweInstance,
+    repo_dir: Path,
+    *,
+    reuse_index: bool = True,
+    max_files: int = 2,
+    snippet_chars: int = 2500,
+) -> tuple[str, int]:
     """用 P2 的定位器选候选文件，拼出"请给补丁"的 prompt。返回 `(prompt, 命中文件数)`。
 
     复用闭环的做法（先定位再让模型写 diff），这样 SWE-bench 评测走的就是**上线那条路**，
@@ -286,15 +379,20 @@ def build_repair_prompt(instance: SweInstance, repo_dir: Path) -> tuple[str, int
     from patchpilot.index.retrieval import Localizer
     from patchpilot.index.symbols import index_repo
 
-    index = index_repo(repo_dir)
-    paths = Localizer(index).localize_paths(instance.problem, limit=3)
+    key = instance.instance_id.split("-")[0]
+    index = _INDEX_CACHE.get(key) if reuse_index else None
+    if index is None:
+        index = index_repo(repo_dir)
+        if reuse_index:
+            _INDEX_CACHE[key] = index
+    paths = Localizer(index).localize_paths(instance.problem, limit=max_files)
     snippets: list[str] = []
     for rel in paths:
         try:
             text = (repo_dir / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        snippets.append(f"### {rel}\n```\n{text[:4000]}\n```")
+        snippets.append(f"### {rel}\n```\n{text[:snippet_chars]}\n```")
     prompt = "\n".join(
         [
             "你是代码修复助手。下面是仓库里真实 issue 的描述。",
@@ -343,10 +441,7 @@ def evaluate(
                 detail = "候选补丁无法应用"
                 reset_repo(repo_dir, instance, keep_test_patch=True)
                 continue
-            rc, _out = run_tests_in_sandbox(
-                instance.image, repo_dir, node_ids,
-                container_pythonpath=container_pythonpath,
-            )
+            rc, _out = run_tests(instance, repo_dir, node_ids)
             if rc == 0:
                 status = "passed"
                 detail = f"FAIL_TO_PASS 全绿（第 {rounds} 轮）"
@@ -375,6 +470,7 @@ def evaluate(
 
 
 __all__ = [
+    "_INDEX_CACHE",
     "SweReport",
     "SweInstance",
     "SweOutcome",
@@ -387,5 +483,7 @@ __all__ = [
     "prepare_repo",
     "reset_repo",
     "resolve_node_ids",
+    "run_tests",
     "run_tests_in_sandbox",
+    "run_tests_on_host",
 ]

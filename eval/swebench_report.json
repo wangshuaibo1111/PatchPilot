@@ -1,34 +1,106 @@
 {
   "meta": {
     "instances": [
-      "pallets__flask-4992",
-      "pallets__flask-5063"
+      "sympy__sympy-11400",
+      "sympy__sympy-11870",
+      "sympy__sympy-11897",
+      "sympy__sympy-12171",
+      "sympy__sympy-12419",
+      "sympy__sympy-12454",
+      "sympy__sympy-12481",
+      "sympy__sympy-13031",
+      "sympy__sympy-13043",
+      "sympy__sympy-13146",
+      "sympy__sympy-13177"
     ],
     "images": [
-      "patchpilot-py312-deps:flask-pytest7"
+      ""
     ],
     "note": "N 很小，只能当链路验证；并非论文级 pass@1。受限原因见 eval/swebench_subset.json 的 notes 与 PLAN。"
   },
   "metrics": {
-    "total": 2,
-    "valid": 2,
-    "passed": 1,
-    "pass@1": 0.5
+    "total": 11,
+    "valid": 11,
+    "passed": 0,
+    "pass@1": 0.0
   },
   "outcomes": [
     {
-      "instance_id": "pallets__flask-4992",
-      "status": "passed",
-      "detail": "FAIL_TO_PASS 全绿（第 1 轮）",
-      "rounds": 1,
-      "cost_usd": 0.007466
-    },
-    {
-      "instance_id": "pallets__flask-5063",
+      "instance_id": "sympy__sympy-11400",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.021955
+      "cost_usd": 0.01112
+    },
+    {
+      "instance_id": "sympy__sympy-11870",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.021954
+    },
+    {
+      "instance_id": "sympy__sympy-11897",
+      "status": "failed",
+      "detail": "模型没有产出补丁",
+      "rounds": 1,
+      "cost_usd": 0.039529
+    },
+    {
+      "instance_id": "sympy__sympy-12171",
+      "status": "failed",
+      "detail": "FAIL_TO_PASS 仍有失败",
+      "rounds": 1,
+      "cost_usd": 0.003574
+    },
+    {
+      "instance_id": "sympy__sympy-12419",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.014579
+    },
+    {
+      "instance_id": "sympy__sympy-12454",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.002846
+    },
+    {
+      "instance_id": "sympy__sympy-12481",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.017128
+    },
+    {
+      "instance_id": "sympy__sympy-13031",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.011863
+    },
+    {
+      "instance_id": "sympy__sympy-13043",
+      "status": "failed",
+      "detail": "FAIL_TO_PASS 仍有失败",
+      "rounds": 1,
+      "cost_usd": 0.019817
+    },
+    {
+      "instance_id": "sympy__sympy-13146",
+      "status": "failed",
+      "detail": "FAIL_TO_PASS 仍有失败",
+      "rounds": 1,
+      "cost_usd": 0.021619
+    },
+    {
+      "instance_id": "sympy__sympy-13177",
+      "status": "failed",
+      "detail": "候选补丁无法应用",
+      "rounds": 1,
+      "cost_usd": 0.004952
     }
   ]
 }
