@@ -6,6 +6,7 @@
 |---|---|---|
 | **符号** | 名字精确/模糊匹配到定义 | issue 里常直接写出函数名 |
 | **词法**（BM25） | 标识符拆分后的语义接近 | issue 说"配置读取失败"，代码叫 `load_config` |
+| **向量** | 词法哈希向量的余弦相似 | 容忍拼写近似（`getSetting` vs `get_setting`） |
 | **调用图** | 命中符号**被谁调用 / 调用了谁** | 修复点常在调用方或实现方，而非报错那行 |
 
 ## 融合：RRF（Reciprocal Rank Fusion）
@@ -37,12 +38,18 @@ from dataclasses import dataclass, field
 
 from patchpilot.index.lexical import BM25Index, ScoredChunk, tokenize
 from patchpilot.index.symbols import Chunk, CodeIndex, chunk_id
+from patchpilot.index.vectors import VectorIndex
 
 #: RRF 的平滑常数（越小越偏向头部）
 RRF_K = 60.0
 
-#: 三路默认权重（消融实验会逐路关闭，见 `LocalizerConfig`）
-DEFAULT_WEIGHTS = {"symbol": 1.0, "lexical": 1.0, "graph": 0.6}
+#: **每通道只取前 K 名参与融合**。这不是调参，是 RRF 的标准做法：
+#: 不截断时，某个通道可以贡献几十个"低名次小分"，累加起来超过另一通道的头名命中——
+#: 实测在定位基准上它确实让融合结果**低于**单通道（见 PLAN 消融表）。
+CHANNEL_CUTOFF = 10
+
+#: 各通道默认权重（消融实验会逐路关闭，见 `LocalizerConfig`）
+DEFAULT_WEIGHTS = {"symbol": 1.0, "lexical": 1.0, "vector": 0.8, "graph": 0.6}
 
 #: 重排加权的默认值
 DEFAULT_RERANK = {"exact_symbol": 2.0, "path_match": 0.5, "test_penalty": 0.5}
@@ -57,6 +64,8 @@ class LocalizerConfig:
 
     use_symbol: bool = True
     use_lexical: bool = True
+    # 词法哈希向量（**不是**语义 embedding，见 index/vectors.py 的模块说明）
+    use_vector: bool = True
     use_graph: bool = True
     use_rerank: bool = True
     weights: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_WEIGHTS))
@@ -110,6 +119,9 @@ class Localizer:
         self._bm25 = (
             BM25Index(self._chunks) if self._config.use_lexical and self._chunks else None
         )
+        self._vectors = (
+            VectorIndex(self._chunks) if self._config.use_vector and self._chunks else None
+        )
 
     @property
     def index(self) -> CodeIndex:
@@ -139,6 +151,12 @@ class Localizer:
         if self._bm25 is None:
             return {}
         hits: list[ScoredChunk] = self._bm25.search(query, limit=pool)
+        return {chunk_id(hit.chunk): rank for rank, hit in enumerate(hits, start=1)}
+
+    def _vector_ranks(self, query: str, *, pool: int) -> dict[str, int]:
+        if self._vectors is None:
+            return {}
+        hits = self._vectors.search(query, limit=pool)
         return {chunk_id(hit.chunk): rank for rank, hit in enumerate(hits, start=1)}
 
     def _graph_ranks(self, seeds: dict[str, int], *, pool: int) -> dict[str, int]:
@@ -200,6 +218,8 @@ class Localizer:
             channels["symbol"] = self._symbol_ranks(query, pool=pool)
         if config.use_lexical:
             channels["lexical"] = self._lexical_ranks(query, pool=pool)
+        if config.use_vector:
+            channels["vector"] = self._vector_ranks(query, pool=pool)
         if config.use_graph:
             seeds = dict(channels.get("symbol") or {})
             # 用符号通道的头部当种子；没有符号命中时退回词法头部
@@ -213,6 +233,8 @@ class Localizer:
         for name, ranks in channels.items():
             weight = float(config.weights.get(name, 1.0))
             for cid, rank in ranks.items():
+                if rank > CHANNEL_CUTOFF:
+                    continue
                 fused[cid] = fused.get(cid, 0.0) + weight / (RRF_K + rank)
                 origin.setdefault(cid, set()).add(name)
         if not fused:
@@ -277,6 +299,7 @@ class Localizer:
 
 
 __all__ = [
+    "CHANNEL_CUTOFF",
     "DEFAULT_RERANK",
     "DEFAULT_WEIGHTS",
     "RRF_K",

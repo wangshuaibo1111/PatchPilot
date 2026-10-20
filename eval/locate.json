@@ -1,6 +1,6 @@
 [
   {
-    "config": "基线（现有 locate：符号+文本子串）",
+    "config": "基线（P1 现有 locate：符号+子串）",
     "group": "corpus",
     "total": 6,
     "top1": 1.0,
@@ -9,19 +9,22 @@
     "misses": []
   },
   {
-    "config": "基线（现有 locate：符号+文本子串）",
+    "config": "基线（P1 现有 locate：符号+子串）",
     "group": "history",
-    "total": 10,
-    "top1": 0.3,
-    "top5": 0.3,
-    "mrr": 0.3,
+    "total": 11,
+    "top1": 0.0909,
+    "top5": 0.0909,
+    "mrr": 0.0909,
     "misses": [
+      "383ac45a",
       "0e02dbe8",
       "832671d0",
       "806e36c6",
       "4a97986f",
       "5100a1dc",
+      "ea9e6923",
       "2c36a3bc",
+      "0f5793f5",
       "0ad9ea81"
     ]
   },
@@ -37,11 +40,13 @@
   {
     "config": "仅符号通道",
     "group": "history",
-    "total": 10,
-    "top1": 0.7,
-    "top5": 0.7,
-    "mrr": 0.7,
+    "total": 11,
+    "top1": 0.4545,
+    "top5": 0.5455,
+    "mrr": 0.5,
     "misses": [
+      "383ac45a",
+      "832671d0",
       "806e36c6",
       "4a97986f",
       "0ad9ea81"
@@ -59,14 +64,14 @@
   {
     "config": "仅词法 BM25",
     "group": "history",
-    "total": 10,
-    "top1": 0.8,
+    "total": 11,
+    "top1": 0.7273,
     "top5": 1.0,
-    "mrr": 0.8583,
+    "mrr": 0.8258,
     "misses": []
   },
   {
-    "config": "符号+词法（无图、无重排）",
+    "config": "仅向量（词法哈希）",
     "group": "corpus",
     "total": 6,
     "top1": 1.0,
@@ -75,16 +80,18 @@
     "misses": []
   },
   {
-    "config": "符号+词法（无图、无重排）",
+    "config": "仅向量（词法哈希）",
     "group": "history",
-    "total": 10,
-    "top1": 0.8,
-    "top5": 0.9,
-    "mrr": 0.8417,
-    "misses": []
+    "total": 11,
+    "top1": 0.4545,
+    "top5": 0.9091,
+    "mrr": 0.6015,
+    "misses": [
+      "4a97986f"
+    ]
   },
   {
-    "config": "符号+词法+图（无重排）",
+    "config": "符号+词法（无图无向量无重排）",
     "group": "corpus",
     "total": 6,
     "top1": 1.0,
@@ -93,16 +100,34 @@
     "misses": []
   },
   {
-    "config": "符号+词法+图（无重排）",
+    "config": "符号+词法（无图无向量无重排）",
     "group": "history",
-    "total": 10,
-    "top1": 0.7,
-    "top5": 0.9,
-    "mrr": 0.7917,
+    "total": 11,
+    "top1": 0.6364,
+    "top5": 1.0,
+    "mrr": 0.7576,
     "misses": []
   },
   {
-    "config": "三路 + 重排（P2 完整）",
+    "config": "符号+词法+向量（无图无重排）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 0.8333,
+    "top5": 1.0,
+    "mrr": 0.9167,
+    "misses": []
+  },
+  {
+    "config": "符号+词法+向量（无图无重排）",
+    "group": "history",
+    "total": 11,
+    "top1": 0.7273,
+    "top5": 0.9091,
+    "mrr": 0.8106,
+    "misses": []
+  },
+  {
+    "config": "符号+词法+图（无向量无重排）",
     "group": "corpus",
     "total": 6,
     "top1": 1.0,
@@ -111,12 +136,30 @@
     "misses": []
   },
   {
-    "config": "三路 + 重排（P2 完整）",
+    "config": "符号+词法+图（无向量无重排）",
     "group": "history",
-    "total": 10,
-    "top1": 0.8,
-    "top5": 0.9,
-    "mrr": 0.8667,
+    "total": 11,
+    "top1": 0.6364,
+    "top5": 1.0,
+    "mrr": 0.753,
+    "misses": []
+  },
+  {
+    "config": "四路 + 重排（P2 完整）",
+    "group": "corpus",
+    "total": 6,
+    "top1": 1.0,
+    "top5": 1.0,
+    "mrr": 1.0,
+    "misses": []
+  },
+  {
+    "config": "四路 + 重排（P2 完整）",
+    "group": "history",
+    "total": 11,
+    "top1": 0.7273,
+    "top5": 0.9091,
+    "mrr": 0.8061,
     "misses": []
   }
 ]

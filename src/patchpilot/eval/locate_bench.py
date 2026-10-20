@@ -207,18 +207,50 @@ def cases_from_history(
 # ---------------------------------------------------------------- 两个"配置"（基线 + P2）
 
 ABLATIONS: tuple[tuple[str, LocalizerConfig | None], ...] = (
-    ("基线（现有 locate：符号+文本子串）", None),
-    ("仅符号通道", LocalizerConfig(use_symbol=True, use_lexical=False, use_graph=False)),
-    ("仅词法 BM25", LocalizerConfig(use_symbol=False, use_lexical=True, use_graph=False)),
+    ("基线（P1 现有 locate：符号+子串）", None),
     (
-        "符号+词法（无图、无重排）",
-        LocalizerConfig(use_symbol=True, use_lexical=True, use_graph=False, use_rerank=False),
+        "仅符号通道",
+        LocalizerConfig(use_symbol=True, use_lexical=False, use_vector=False, use_graph=False),
     ),
     (
-        "符号+词法+图（无重排）",
-        LocalizerConfig(use_symbol=True, use_lexical=True, use_graph=True, use_rerank=False),
+        "仅词法 BM25",
+        LocalizerConfig(use_symbol=False, use_lexical=True, use_vector=False, use_graph=False),
     ),
-    ("三路 + 重排（P2 完整）", LocalizerConfig()),
+    (
+        "仅向量（词法哈希）",
+        LocalizerConfig(use_symbol=False, use_lexical=False, use_vector=True, use_graph=False),
+    ),
+    (
+        "符号+词法（无图无向量无重排）",
+        LocalizerConfig(
+            use_symbol=True,
+            use_lexical=True,
+            use_vector=False,
+            use_graph=False,
+            use_rerank=False,
+        ),
+    ),
+    (
+        "符号+词法+向量（无图无重排）",
+        LocalizerConfig(
+            use_symbol=True,
+            use_lexical=True,
+            use_vector=True,
+            use_graph=False,
+            use_rerank=False,
+        ),
+    ),
+    (
+        "符号+词法+图（无向量无重排）",
+        LocalizerConfig(
+            use_symbol=True,
+            use_lexical=True,
+            use_vector=False,
+            use_graph=True,
+            use_rerank=False,
+        ),
+    ),
+    ("四路 + 重排（P2 完整）", LocalizerConfig()),
 )
 
 

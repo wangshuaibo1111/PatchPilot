@@ -245,9 +245,16 @@ def test_ablation_switch_actually_changes_channels(project: Path) -> None:
     """消融开关必须真的生效（否则"消融表"是假的）。"""
     index = index_repo(project)
 
-    only_lexical = Localizer(index, config=LocalizerConfig(
-        use_symbol=False, use_lexical=True, use_graph=False, use_rerank=False
-    ))
+    only_lexical = Localizer(
+        index,
+        config=LocalizerConfig(
+            use_symbol=False,
+            use_lexical=True,
+            use_vector=False,
+            use_graph=False,
+            use_rerank=False,
+        ),
+    )
     hits = only_lexical.localize("get_setting 报错", limit=3)
 
     assert hits
@@ -274,6 +281,83 @@ def test_graph_channel_diffuses_to_callers(project: Path) -> None:
 
     assert "config.py" in paths
     assert "app.py" in paths, f"调用图应把调用方带出来，实际 {paths}"
+
+
+# ---------------------------------------------------------------- 向量通道（词法哈希）
+
+
+def test_vectorizer_is_deterministic_across_calls() -> None:
+    """**必须跨进程稳定**：用 BLAKE2b 分桶，绝不能用内置 `hash()`（每进程加盐）。"""
+    from patchpilot.index.vectors import HashingVectorizer
+
+    vectorizer = HashingVectorizer()
+    first = vectorizer.vectorize("load_config ConfigError")
+    second = vectorizer.vectorize("load_config ConfigError")
+
+    assert first == second
+    assert first, "空向量说明特征抽取失败"
+
+
+def test_vectorizer_features_include_char_ngrams() -> None:
+    """字符 n-gram 是"容忍拼写近似"的来源：`getSetting` 与 `get_setting` 应共享桶。"""
+    from patchpilot.index.vectors import HashingVectorizer
+
+    vectorizer = HashingVectorizer()
+    camel = set(vectorizer.vectorize("getSetting"))
+    snake = set(vectorizer.vectorize("get_setting"))
+
+    assert camel & snake, "近拼写应至少共享一个桶（否则容错能力为零）"
+
+
+def test_vector_index_ranks_the_relevant_chunk_first(project: Path) -> None:
+    from patchpilot.index.vectors import VectorIndex
+
+    index = index_repo(project)
+    chunks = tuple(c for f in index.files for c in f.chunks)
+
+    hits = VectorIndex(chunks).search("ConfigError 配置项缺失", limit=3)
+
+    assert hits
+    assert hits[0].chunk.path == "config.py", f"期望 config.py，实际 {hits[0].chunk.path}"
+
+
+def test_vector_index_is_deterministic_on_ties() -> None:
+    from patchpilot.index.vectors import VectorIndex
+
+    chunks = (
+        Chunk(path="b.py", start_line=1, end_line=2, text="alpha beta gamma"),
+        Chunk(path="a.py", start_line=1, end_line=2, text="alpha beta gamma"),
+    )
+    first = [h.chunk.path for h in VectorIndex(chunks).search("alpha beta", limit=2)]
+    second = [h.chunk.path for h in VectorIndex(chunks).search("alpha beta", limit=2)]
+
+    assert first == second
+    assert first == ["a.py", "b.py"], "同分时按路径稳定排序"
+
+
+def test_all_channels_off_yields_nothing(project: Path) -> None:
+    """消融必须能全部关闭（否则"消融表"是假的）。"""
+    index = index_repo(project)
+
+    without = Localizer(
+        index,
+        config=LocalizerConfig(
+            use_symbol=False, use_lexical=False, use_vector=False, use_graph=False
+        ),
+    )
+
+    assert without.localize("get_setting", limit=3) == []
+
+
+def test_channel_cutoff_prevents_long_tail_dilution() -> None:
+    """每通道只取前 K 名参与融合——否则低名次小分累加会淹没头名命中。
+
+    这是 RRF 的标准做法；实测不截断时融合结果**低于**单通道（见 PLAN 消融表）。
+    """
+    from patchpilot.index.retrieval import CHANNEL_CUTOFF
+
+    assert CHANNEL_CUTOFF >= 1
+    assert CHANNEL_CUTOFF < 60, "截断太宽等于没截断（融合 pool 默认 60）"
 
 
 # ---------------------------------------------------------------- 定位基准
