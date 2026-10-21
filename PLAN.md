@@ -39,8 +39,8 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 | # | 验收项（Definition of Done） | 验证方式 | 状态 |
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
-| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**564 项单测在 cp936 与 UTF-8 两种模式下均全绿** |
-| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— **已标定 11 题**（宿主 conda py3.9 解释器），实测 `pass@1 = 0/11`，失败集中在**补丁无法应用 7/11**（prompt 上下文不足，非 harness 故障）；另在 flask 子集上 `1/2`；**均属链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
+| 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**全量单测在 cp936 与 UTF-8 两种模式下均全绿**（具体项数见每次提交的冻结自证，不写死在这里以免过期） |
+| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— **已标定 11 题**（宿主 conda py3.9 解释器），修正判分口径后实测 `pass@1 = 0/10`（1 题判 invalid 不计分母）：**补丁无法应用 9 题**、用例未通过 1 题。补丁无法应用是**真问题**（unified diff 与 sympy 大文件的上下文对不上，不是判分故障）；另在 flask 子集上 `1/2`；**均属链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
@@ -125,9 +125,9 @@ D:\Code\PatchPilot\
 |---|---|---|---|
 | **P0** | 工程骨架：工程配置、compose、状态机、checkpointer、CLI、CI、测试 | `pp smoke` 通过 + 全部单测通过 + `code-reviewer` 出具 APPROVE | ✅ **已完成并发布**：`0ad9ea8` 已推送 `origin/main`（第八轮 APPROVE，摘要 `ab1ce173…`）；4 条非阻塞项见最新日志 |
 | **P1** | 沙箱与工具：Docker 隔离、4 个 MCP Server、安全测试 | 沙箱跑 pytest 结构化返回；4 类安全用例全绿 | ✅ **已完成（验收项 2）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）+ **4 个 MCP server**（fs/git/test/search，stdio 协议层已验证）+ 自建镜像 `patchpilot-sandbox:0.1.0-py312`；真机 Docker 端到端 **15/15**（网络/只读/非 root/内存 OOM/pids 熔断/超时清理） |
-| **P2** | 代码索引与检索：符号表、四路召回、rerank | 定位集 Top-5 命中率有基线与消融表 | ✅ **已完成**：`index/` 符号索引（`ast` + 非 Python 近似规则）+ BM25 + **词法哈希向量** + 调用图 + RRF 融合（含**每通道 top-K 截断**）+ 可解释重排；`pp locate` 一条命令出 8 组**消融表**。**39 题汇总 Top-1：基线 48.7% → 四路完整 69.2%（+20.5pp）**，Top-5 51.3% → 84.6%，MRR 0.500 → 0.768；三组分开报告（corpus 6 / synthetic 20 / history 13）。已接入修复闭环 `locate` |
+| **P2** | 代码索引与检索：符号表、四路召回、rerank | 定位集 Top-5 命中率有基线与消融表 | ✅ **已完成**：`index/` 符号索引（`ast` + 非 Python 近似规则）+ BM25 + 词法哈希向量 + 调用图 + RRF 融合（含每通道 top-K 截断）+ 可解释重排；`pp locate` 出 8 组**消融表**。**题集已冻结**（`eval/locate_cases.json`，按每题 commit 用 `git archive` 取当时的代码树，42 题 = 语料 6 + 合成 20 + 历史 16）→ 数字可复现。**Top-1：基线 57.1% → 四路完整 76.2%（McNemar p=0.0215，显著）**；但**组内差异不显著**（四路 vs 仅词法 p=1.0、vs 仅向量 p=0.625），故不宣称「四路最好」。已接入修复闭环 `locate` |
 | **P3** | 修复闭环：8 节点全图、真实模型、预算熔断 | 10 个真实 issue 端到端跑通 ≥3 个 | 🔧 **进行中**：8 节点图（`graph/repair.py`）+ `pp run` 已落地，**真机端到端（DeepSeek 真模型 + Docker 沙箱）跑通 1 例**；`openai` 已装、Key 已验活；待做：10 个真实 issue 的批量跑通与统计（属 P4 评测） |
-| **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 🔧 **FastEval 已完成** + **真实 SWE-bench 子集已通链路**（`pp swebench`，带准入标定门，N=2 得 1/2）；**待做**：50 题规模（受镜像与 Python 版本限制，见 §9） |
+| **P4** | 评测闭环：两级评测集、指标、失败分类、报告 | `pp eval` 一条命令出报告；≥3 组策略对比 | 🔧 **FastEval 已完成**（6 题 pass@1 100%，成本/耗时/P95 有真实数字）；**真实 SWE-bench 子集已通链路**（`pp swebench`，标定门 + 按日志判分，11 题标定通过）；**50 题规模仍不可达**（镜像仓库 403 / Docker Hub 超时），见 §9 |
 | **P5** | 观测与 CI 门禁：OTel/Langfuse、指标回归门禁 | 改坏 prompt → CI 变红并指出指标 | 未开始 |
 | **P6** | Web 面板与部署：轨迹回放、评测看板、一键 compose | 公网可访问 demo；PC 上 3 条命令跑通 | 未开始 |
 | **P7** | 打磨产出：成本优化、ADR、评测报告、英文 README、视频 | 仓库可开源，README 首屏即指标 | 未开始 |
@@ -339,6 +339,90 @@ D:\Code\PatchPilot\
   - `pytest -o addopts=""` → **558 passed + 4 skipped**，0 failed / 0 error
   - `pp locate` → 消融表落盘 `eval/locate.json`
 - **审查**：按节拍，P2 属一个新阶段，留待与该阶段一并复审
+- **提交**：见本批提交
+
+### [2026-10-17] SWE-bench 重跑（修正判分后）：0/10，且 invalid 通道生效
+
+- **重跑原因**：上一版的 `0/11` 是在"只看退出码 + 索引缓存串题"下得到的，两个前提都换了，必须重跑。
+- **结果**：`pass@1 = 0/10`（11 题中 1 题判 **invalid**，不计入分母）。失败分类：
+
+  | 类型 | 题数 |
+  |---|---|
+  | **候选补丁无法应用** | **9** |
+  | 用例未通过 | 1 |
+  | 无效（找不到测试文件） | 1（不计分母） |
+
+- **判分改动立刻抓出两件旧版会判错的事**：
+  1. `sympy__sympy-13146` 判 **invalid** 而不是"模型失败"——它的 F2P 名在仓库里找不到测试文件，
+     旧版会把它算成一次模型失败，污染分母；
+  2. `sympy__sympy-13177` 给出**可审计**的判据"1 个用例未通过: test_mod"，
+     旧版只会说"FAIL_TO_PASS 仍有失败"。
+- **9 题"补丁无法应用"现在是真问题**：索引缓存已删，候选文件不再是错的，
+  所以这是模型产出的 unified diff 与 sympy 大文件上下文对不上（真·格式问题）。
+  下一步要么给带行号的精确片段，要么改用 search/replace 编辑格式，要么在应用端 fuzz
+  （`git apply -C1`）。这三者任一都能把这 9 题变成真正被评测的题。
+- **仍要强调**：N=10 属**链路验证**，不是论文级 pass@1；且环境只有 Python 3.12/3.9，
+  50 题规模仍受镜像仓库限制。
+- **审查**：待下一轮复审
+- **提交**：见本批提交
+
+### [2026-10-17] **第三十二轮复审 REJECT 后的修复**：判分口径按官方重写 + 题集冻结
+
+- **复审判定**：`REJECT`，4 条 BLOCKING。全部成立，已逐条修。
+- **BLOCKING 1（我引入的回归）**：`_INDEX_CACHE` 按"仓库名"缓存索引 → 11 题全是 sympy 时，
+  10 题的候选文件是用第 1 题那个 commit 的索引选出来的（复审实测 gold 文件只命中 4/11）。
+  **已删除缓存**，每题各自建索引（慢 ~40s/题，宁慢不可错）。
+  因此"0/11 的瓶颈是 prompt 上下文不足"这个结论**撤回**——7 题"补丁无法应用"首先是因为给错了文件。
+- **BLOCKING 2（判分口径）**：上一版只看子进程 `rc == 0`。复审实测 `cmd.exe -m pytest -q` 也返回 0
+  → 那会把题记成 passed、pass@1 直接变 100%。
+  **改为照官方 `swebench/harness/grading.py` 的口径**：解析 `pytest -rA` 的状态表逐条比对
+  `FAIL_TO_PASS`；`PASSED`/`XFAIL` 算通过，`FAILED`/`ERROR`/**`SKIPPED`** 算失败，状态缺失按失败；
+  一条结果都解析不到 → **invalid**（"没跑起来"不等于"修好了"）。
+  另加 `subprocess` timeout + `stdin=DEVNULL`（上一轮"跑半小时没输出"就是没有它），
+  并让 `load_subset` **真的跑一次解释器**确认它有 pytest。
+- **BLOCKING 3（裸名歧义）**：`resolve_node_ids` 原先对同名测试**静默取字母序第一个文件**
+  （11 题里 5 题有歧义、至少 1 题明确选错）。改为 `resolve_targets` **保留全部候选**并一起跑，
+  判分要求"至少一个 PASSED 且没有任何失败"（保守，不虚高）；解析结果与观察到的状态写进报告，可审计。
+  顺带查清了裸名的由来：官方对 sympy 用的是 sympy 自己的 runner（`parse_log_sympy` 解析
+  `test_xxx ok/F/E`），状态表的键就是裸名——所以裸名不是数据缺陷。
+- **BLOCKING 4（数字不可复现）**：题源是 `git log`（每提交一次多一题）＋索引读活工作区
+  → 落盘数字没有任何已提交状态能复现。**修法**：把题集冻结成 `eval/locate_cases.json`
+  （含 query 与 expected_files），每题用 `git archive <commit>` 取出**当时**的代码树再建索引。
+  新增 `tests/test_locate_frozen.py` 5 例，其中一条证明"工作区新增/提交文件后基准数字不变"。
+- **重算后的真实数字（42 题，可复现）**：
+
+  | 配置 | Top-1 | Top-5 | MRR |
+  |---|---|---|---|
+  | **基线（P1 现有 locate）** | **57.1%** | **61.9%** | 0.594 |
+  | 仅符号 | 64.3% | 73.8% | 0.686 |
+  | 仅词法 BM25 | 73.8% | 85.7% | 0.798 |
+  | 仅向量 | **81.0%** | 88.1% | **0.841** |
+  | 符号+词法 | 71.4% | 85.7% | 0.782 |
+  | 符号+词法+向量 | 71.4% | 88.1% | 0.798 |
+  | 符号+词法+图 | 71.4% | **90.5%** | 0.806 |
+  | **四路 + 重排（P2 完整）** | **76.2%** | 88.1% | 0.824 |
+
+- **显著性（McNemar 精确检验）**：基线 vs 四路 **1:9，p=0.0215（显著）**；
+  四路 vs 仅词法 0:1、p=1.0；四路 vs 仅向量 1:3、p=0.625 —— **组内差异分辨不出**。
+- **撤回的说法（第二个必须撤回的结论）**：上一版 PLAN 写「四路完整在汇总行上**全面最好**」
+  且自相矛盾（它自己的 Top-5 84.6% < 87.2%）。现在改成：
+  **P2 相对旧 locate 有显著提升（+19.1pp，p=0.02）**；**组内谁是第一，在 N=42 上分辨不出**，
+  不据此调默认配置。另外承认：历史组每题代码树只有 18–41 个文件，
+  这种小树会放大字符 n-gram（向量通道）的优势，因此该组结论不宜外推到真实仓库。
+- **另一个真机事故（本轮新发现，与复审无关）**：加了 `HTTPS_PROXY` 后 `pp swebench` 启动即崩，
+  `httpx` 抛 `InvalidURL: Invalid port: ':1]'`。根因是代理客户端把 `NO_PROXY` 写成
+  `…,::1,[::1]`，httpx 把 `[::1]` 当 URL、`:1]` 当端口（上游解析缺陷）。
+  新增 `core/netenv.sanitize_no_proxy()`，在建 LLM 客户端前清掉含方括号的条目；
+  `tests/test_netenv.py` 5 例（含"清理前抛异常、清理后正常"的直接症状）。
+- **同时查清了 `web_fetch` 一直失败的原因**：DSH 的 `web_fetch` 走 Node 的 `fetch`（undici），
+  **既不读 Windows 注册表代理、默认也不读 `HTTPS_PROXY`**，而本机对这些主机的**直连会被 RST**。
+  验证：加 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1` 后 Node 抓同一 URL 返回 200（重启 DSH 后已生效）。
+- **文件**：`eval/swebench.py`（判分重写、删缓存、`resolve_targets`、解释器校验、审计字段）、
+  `eval/locate_bench.py`（`cases_from_frozen`/`freeze_history_cases`/`_materialize_commit`）、
+  `core/netenv.py`（新增）、`core/llm.py`、`cli.py`、
+  `tests/test_swebench_grading.py`（16 例）、`tests/test_locate_frozen.py`（5 例）、
+  `tests/test_netenv.py`（5 例）、`eval/locate_cases.json`、`eval/locate.json`、`PLAN.md`、`README.md`
+- **审查**：待下一轮复审
 - **提交**：见本批提交
 
 ### [2026-10-17] **解锁旧 Python 环境**：SWE-bench 子集 2 → **11 题**；实测 0/11 并定位真因

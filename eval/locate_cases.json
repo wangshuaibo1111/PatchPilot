@@ -1,0 +1,197 @@
+{
+  "scope": "src/patchpilot",
+  "note": "**冻结题集**：由 `git log` 一次性生成（含 query 与 expected_files），出题时用 `git archive <commit>` 取出该题**当时**的代码树，不再读活工作区——否则每提交一次，题集与基线都会漂。题源仍带自我指涉（本仓库的提交历史即题目），故只用于组内对比与消融，不可与外部基准混谈。",
+  "cases": [
+    {
+      "id": "1a4ceb26",
+      "commit": "1a4ceb263f3d41ce0fd421fa3441b15ceec8ed1c",
+      "query": "feat(eval): 解锁旧 Python —— SWE-bench 子集 2 → 11 题；实测 0/11 并定位真因\n\n## 怎么解锁的（关键：不依赖镜像仓库）\n\n镜像仓库 403 / Docker Hub 超时，拿不到 `python:3.9` 基础镜像；但 **conda 可用且 conda/pypi 可达**：\n\n1. `conda create -p .tmp/py39env python=3.9` → 3.9 解释器，装\n   `pytest==7.4.4 pytest-timeout==2.3.1 mpmath`；\n2. 给 harness 加**宿主解释器模式**（`run_tests_on_host`）——`SweInstance.python` 非空则走宿主，\n   否则仍走 docker 沙箱；\n3. 实测 `sympy 1.1.2.dev` 在 3.9 上 `import` 成功（`distutils` 回来了）。\n\n**安全取舍（已写进模块说明与子集 notes）**：宿主运行**没有容器隔离**，只靠一次性克隆 +\n超时 + 专用解释器。被评测补丁由本项目模型产出、打在一次性克隆上，故仅用于**评测**；\n生产修复路径仍走容器沙箱。\n\n**可移植性**：入库子集用 `${PP_SWEBENCH_PYTHON}` 占位（本机绝对路径不该进版本库），\n`load_subset` 负责展开，未设置时报清晰错误。\n\n## 标定：2 → 11 题\n\n全是 sympy；flask/pylint 因 py39 环境缺依赖被剔除，`sympy__sympy-12236` 因\n\"打补丁前就全绿\"被剔除 —— **标定门在正常工作**。\n\n## 实测：pass@1 = 0/11\n\n| 失败类型 | 题数 |\n|---|---|\n| **候选补丁无法应用** | **7** |\n| FAIL_TO_PASS 仍有失败 | 3 |\n| 模型没有产出补丁 | 1 |\n\n## 真因（本轮最有价值的发现）\n\n瓶颈**不是 harness**，而是**补丁格式与上下文供给**：prompt 只给每个候选文件 2.5KB 片段，\n模型无法复现精确的上下文行与行号，于是 `git apply` 一律 `patch does not apply`。\n\nFastEval 那 6 题全是十几行的小文件，所以从未暴露这个问题 —— **\"小样本全绿\"的又一个反例**。\n\n## 单题耗时画像（据此做的两处提速）\n\n| 阶段 | 提速前 | 提速后 |\n|---|---|---|\n| 建索引 | 41s | 36s（首题）→ 后续 **0s**（按仓库复用） |\n| 模型 | 112s | 64s（片段 2.5KB × 2 文件） |\n| 单题合计 | ~153s | ~103s → 后续 ~70s |\n\n11 题从\"跑不完\"降到约 13 分钟。索引缓存是**评测专用取舍**（同仓库不同 commit 复用，\n文件布局变化很小），生产路径不用它。\n\n## 下一步（明确工程项，不是空话）\n\n1. 给模型**带行号的精确片段**；\n2. 或改用 search/replace 编辑格式（`<<<<<<< SEARCH` / `=======` / `>>>>>>>`）；\n3. 并在应用端做 fuzz（`git apply -C1` 或 `patch -p1 --fuzz=3`）。\n\n三者任一都能把那 7 题从\"无法应用\"变成\"真正被评测\"。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **595 passed + 4 skipped**，0 failed / 0 error\n- `tests/test_swebench.py` 14 例（新增：宿主模式无需镜像、二选一校验、占位展开/未展开报错）\n- `pp swebench` 真机复跑 11 题（约 13 分钟）→ 同一结果\n- `pp check --json` ×2 → `ok=True files=84 checks=10 fail=[]`\n\nTREE_DIGEST: c821d415dc941511ec1cd0c56b7a9a1f\n审查: 留待该阶段一并复审",
+      "expected_files": [
+        "eval/swebench.py"
+      ]
+    },
+    {
+      "id": "bf21fdfc",
+      "commit": "bf21fdfc2d9a5cd5eab441e9995610879c73b462",
+      "query": "feat(eval): 真实 SWE-bench 子集评测（带准入标定门）—— pass@1 = 1/2\n\n## 做了什么\n\n1. 下载 `princeton-nlp/SWE-bench_Lite` test split（**300 instance / 12 仓库**，1.1 MB parquet），\n   解析出全部字段（`problem_statement` / `patch` / `test_patch` / `FAIL_TO_PASS` / …）。\n2. 新增 `src/patchpilot/eval/swebench.py`：克隆 → checkout base_commit → 打 `test_patch`\n   → 打候选补丁 → **沙箱**（`--network none` + 只读根）跑 `FAIL_TO_PASS` → 计 pass@1。\n   内含**准入标定 `calibrate()`** 与**裸测试名解析 `resolve_node_ids()`**\n   （sympy 那类仓库的 F2P 不带文件路径，得先按 `def <name>` 找到所在文件）。\n3. 新增 `pp swebench` 命令；prompt 复用闭环那条路（先 P2 定位器选候选文件再要 diff），\n   所以评的是**上线路径**而不是理想化输入。\n4. 入库 `eval/swebench_subset.json`（2 题 + 1 条剔除记录）与 `eval/swebench_report.json`。\n\n## 真实结果\n\n```\npass@1 = 1/2 = 50%\n  pallets__flask-4992  passed  1 轮修好（模型补上 TOML 支持，test_config_from_file_toml 转绿）\n  pallets__flask-5063  failed  候选补丁无法应用（diff 与当前文件不匹配）\n```\n\n**N=2 仅作链路验证**，报告里也写了这句——不能当论文级数字。\n\n## 为什么只有 2 题（本轮最重要的发现，全部实测）\n\n1. **镜像仓库不可用**：`docker.nju.edu.cn` 对 `python:3.9-slim` 返回 **403**，Docker Hub 超时\n   → 拿不到官方 per-instance 镜像（每题 1~2 GB），也**换不了基础镜像版本**（本地只有 3.12）。\n2. **旧仓库不兼容 Python 3.12**：`sympy/sympy` 2017 年版执行\n   `from distutils.version import StrictVersion`，而 `distutils` 已在 3.12 移除 →\n   `ModuleNotFoundError`。想用 3.9 绕开，撞上的正是第 1 条的 403。\n3. **依赖需按 instance 钉死**：flask 2.x 的测试用 `_pytest.monkeypatch.notset`\n   （pytest 8 已移除，钉 `7.4.4` 后 3 题里 2 题标定通过）；pylint 需特定 `astroid` 与 `toml`；\n   `psf/requests` 的 F2P 要连 httpbin，在 `--network none` 下必然失败。\n\n## 标定门（本模块的可信度来源）\n\n只有\"官方 gold patch 能让 FAIL_TO_PASS 从**失败**翻成**通过**\"的题才进子集。\n`pallets__flask-4045` 因此**被剔除**（flask 2.0 与当前 werkzeug 版本耦合，gold patch 后仍失败），\n剔除原因写进了子集 JSON —— 否则 pass@1 反映的是环境问题而不是模型能力。\n\n## 结论\n\n链路是通的、可复跑的（`pp swebench` 一条命令 + 标定门 + 报告落盘）；\n但\"Lite 50 题 pass@1 ≥ 25%\"在本环境**不可能达成**，需要\"可访问的镜像仓库 + 多版本基础镜像\"\n或官方镜像直连。**如实登记，不做数字粉饰。**\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **591 passed + 4 skipped**，0 failed / 0 error\n- 新增 `tests/test_swebench.py` 10 例（离线：子集校验 / 裸名解析 / pass@1 口径 / 冻结性）\n- `pp swebench` 真机复跑 → 与上述结果一致\n- `pp check --json` ×2 → `ok=True files=84 checks=10 fail=[]`\n\nTREE_DIGEST: 5b926092514b5115c4534d4fc7719b7a\n审查: 留待该阶段一并复审",
+      "expected_files": [
+        "cli.py",
+        "eval/swebench.py"
+      ]
+    },
+    {
+      "id": "b8538f07",
+      "commit": "b8538f07e9e69943cba65f15f7760fd15e0b0508",
+      "query": "feat(p2): 定位基准扩到 39 题（+20 合成题）—— 结论反转，四路完整最强\n\n## 动机\n\n上一版基准只有 17 题，**1 题 = 6~9 个百分点**，组间差异全在噪声里，\n导致\"BM25 单独最好\"这类判断站不住。扩到 **39 题**后重跑，**结论变了**。\n\n## 新增第三组：20 道合成题（`eval/locate_corpus.json`）\n\n10 个领域 × 2 难度层。每题 6 个文件，**刻意含名字相近的干扰模块**\n（`settings`/`schema`/`merger`/`loader`），所以\"随便命中一个\"不得分。\n`easy` 层 issue 点名函数，`hard` 层只描述**行为**（更接近真实用户报告）。\n\n入库前做了标定：**easy Top-1 100% / hard Top-1 20%** —— 有真实梯度，不是天花板。\n\n**诚实标注**：合成代码不是真实项目。\n\n## 新消融表（39 题汇总，8 组配置）\n\n| 配置 | all Top-1 | all Top-5 | MRR |\n|---|---|---|---|\n| **基线（P1 现有 locate：符号+子串）** | **48.7%** | **51.3%** | 0.500 |\n| 仅符号通道 | 59.0% | 61.5% | 0.603 |\n| 仅词法 BM25 | 64.1% | 82.1% | 0.716 |\n| 仅向量（词法哈希） | 64.1% | 84.6% | 0.717 |\n| 符号+词法 | 64.1% | 82.1% | 0.714 |\n| 符号+词法+向量 | 64.1% | 82.1% | 0.731 |\n| 符号+词法+图 | 64.1% | 87.2% | 0.738 |\n| **四路 + 重排（P2 完整）** | **69.2%** | **84.6%** | **0.768** |\n\n分组：corpus(6) 全员 100%（天花板）；synthetic(20) 基线 50% → 四路 60%；\nhistory(13) 基线 23.1% → 四路 69.2%。\n\n## 结论反转（如实记录）\n\n上一版（N=17）结论是\"**BM25 单独最强**、融合反而偏低\"；扩到 39 题后\n**四路完整在汇总行上全面最好**（Top-1 69.2% vs 64.1%，Top-5 84.6% vs 82.1%，\nMRR 0.768 vs 0.716）。\n\n**这说明此前那个结论是小样本噪声**，不是融合真的有害。因此：\n默认配置保持四路，**并且不再以小样本数字调参**。\n\n## 仍然成立的判断\n\n- 单组 1 题 = 5~17pp，所以**只信汇总行**；\n- corpus 组是天花板（无区分度）；\n- hard 层仍只有 20~60%，说明\"只描述行为的 issue\"远未被解决——这是下一步真实短板。\n\n## `pp locate` 升级\n\n新增 `--synthetic` 参数，并在表后打印基线对比行：\n`全部 39 题汇总：Top-1 48.7% → 69.2%（+20.5pp）`，避免读表的人自己算。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **581 passed + 4 skipped**，0 failed / 0 error\n- `tests/test_index.py` 增至 33 例（新增合成组构建 / 防路径逃逸 / 入库自检 / 汇总行断言）\n- `pp locate` → 3 组 × 8 配置 = 32 行落盘 `eval/locate.json`\n- `pp check --json` ×2 → `ok=True files=80 checks=10 fail=[]`\n\nTREE_DIGEST: c90de7f68c1d572c7b48698140f57fe6\n审查: 留待该阶段一并复审",
+      "expected_files": [
+        "cli.py",
+        "eval/locate_bench.py"
+      ]
+    },
+    {
+      "id": "d8858d13",
+      "commit": "d8858d133a5bd1ff675924fa723615956f11f0df",
+      "query": "fix(tools,sandbox): 关闭验收项 2 —— 第三类子进程 I/O + 两处\"守卫无钉\"\n\n## 复审结论\n\n第三十一轮复审 **APPROVE**：验收项 2 的两项保证（沙箱安全边界、git 工具层路径/字节安全）\n经**独立真机**验证在岗 —— junction 7/7 全拒、真机沙箱 **22/22**（只读根 / 网络 none /\nuid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、\n真机 LF 仓库 **6/6**（新建文件盘上字节严格 `b'alpha\\nbeta\\n'`）。\n\n## 复审抓到的\"第三类\"（我点名要它查的）\n\n`sandbox/manager.py` 起 docker 时 `text=True` 无 `encoding` —— cp936 下子进程输出含非法字节时\n**`rc=0` 且 `stdout=None`**（reader 线程 UnicodeDecodeError 被吞），容器测试输出被静默清空。\n判定不受影响（`ok` = 退出码 + 落盘 JUnit），只损可观测性，但这是同族缺陷里最难发现的一种。\n\n## 本轮修复\n\n1. `manager.py`（docker info / image inspect / 起容器）与 `cli.py`（docker info）全部显式\n   `encoding=\"utf-8\", errors=\"replace\"`；\n2. `manager.py`、`cli.py` 的 `proc.stdout.strip()` 补 `or \"\"`（否则 stdout 为 None 时诊断路径\n   抛 `AttributeError`，二次崩）；\n3. `preflight.py` 的 `_run` 改为**整体字节模式**（`input=str` + text 模式会做换行翻译）。\n   注意：`text=True` 与字节 stdin **不能共存** —— 第一次改错就撞上\n   `TypeError: write() argument must be str`，必须整段切到字节再手动解码；\n4. 语料路径包含校验：`EvalTask.materialize` 与 `locate_bench` 拒绝 `../` 逃逸；\n5. 文档契约：`apply_patch` 写明**补丁行尾 = LF**（CRLF 补丁打 LF 文件刻意 fail-closed）；\n   `fs_server.write_file` 写明 **`\\r\\n` 原样保留**（旧 `write_text` 会变 `\\r\\r\\n`，静默损坏）。\n\n## 两处\"守卫无钉\"已钉住（复审用变异证明此前 SURVIVED）\n\n新增 `tests/test_byte_contracts.py`（13 例），**直接断言字节**而不是\"函数被调用过\"：\n\n- `write_text_lf` 三个调用点各一条 `read_bytes()` 断言（`fs_server.write_file` /\n  `EvalTask.materialize` / 闭环落盘的 `.diff`），外加\"不翻译行尾\"与\"保留调用方 CRLF\"；\n- `_git_env` 逐项断言（`GIT_TERMINAL_PROMPT==\"0\"`/`GIT_ASKPASS==\"\"`/`GIT_CONFIG_NOSYSTEM==\"1\"`/\n  `HOME==str(root)`）＋\"三处 git 调用必须共用它\"的结构断言；\n- `docker_available` / `_docker_daemon_status` 在 `stdout=None` 时不崩 + encoding 结构断言。\n\n**变异复核 3/3 KILLED**：`M-textio 退回 write_text`、`M-gitenv 清空隔离项`、`M-utf8 去掉 encoding`\n—— 此前这三条都是 SURVIVED。\n\n## §8.5 登记\n\n`_run_git` 的 `stdout is None` 分支：显式 encoding 使其**结构上不可达**，按第 5 条登记为\n**冗余纵深防御**（加 `# pragma: no cover` 与注释），**不计入覆盖**。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **577 passed + 4 skipped**，0 failed / 0 error\n- 真机沙箱 e2e → **15/15**\n- 变异 3/3 KILLED\n- `pp check --json` ×2 → `ok=True files=79 checks=10 fail=[]`\n\nTREE_DIGEST: 6ebbe0c0bf453c7162e2a482210748ed\n审查: 第三十一轮 APPROVE",
+      "expected_files": [
+        "cli.py",
+        "core/preflight.py",
+        "eval/dataset.py",
+        "eval/locate_bench.py",
+        "eval/runner.py",
+        "sandbox/manager.py",
+        "tools/git_server.py"
+      ]
+    },
+    {
+      "id": "6ea089ae",
+      "commit": "6ea089aeebea6f182c2be26bb9893a091a3f4f36",
+      "query": "feat(p2): 补齐向量通道 —— 四路召回 + 8 组消融表\n\n## 为什么补\n\nP2 首版只做了符号 / BM25 / 调用图三路，**\"代码向量\"这一路缺失**，与本阶段目标不符。\n本轮补上，消融表从 6 组扩到 8 组。\n\n## 新模块 `index/vectors.py`\n\n**词法哈希向量**（严格标注：**不是**语义 embedding）。token 与标识符的字符 n-gram 经\n**BLAKE2b** 哈希到 1024 维、TF-IDF 加权、L2 归一化、余弦检索。\n\n用 BLAKE2b 而非内置 `hash()` 是**必须**的：后者对 str 每进程随机加盐，\n同一份代码两次索引会得到不同向量。`Vectorizer` 是协议，将来接真实 embedding 只换实现。\n\n## 新消融表（历史组 11 题 / 语料组 6 题）\n\n| 配置 | 历史 Top-1 | 历史 Top-5 | MRR |\n|---|---|---|---|\n| **基线（P1 现有 locate：符号+子串）** | **9.1%** | **9.1%** | 0.091 |\n| 仅符号通道 | 45.5% | 54.5% | 0.500 |\n| 仅词法 BM25 | **72.7%** | **100%** | **0.826** |\n| 仅向量（词法哈希） | 45.5% | 90.9% | 0.602 |\n| 符号+词法 | 63.6% | 100% | 0.758 |\n| 符号+词法+向量 | 72.7% | 90.9% | 0.811 |\n| 符号+词法+图 | 63.6% | 100% | 0.753 |\n| **四路 + 重排（P2 完整）** | **72.7%** | 90.9% | 0.806 |\n\n## 本轮修掉的两个真问题\n\n1. **RRF 长尾稀释**：不截断时每通道可贡献几十个\"低名次小分\"，累加能超过另一通道的\n   头名命中 —— 实测让四路融合**低于**单通道。修法是标准做法：\n   **每通道只取前 `CHANNEL_CUTOFF=10` 名**参与融合。\n2. **向量通道把纯中文查询误命中到无关文件**：中文 token 哈希进桶后**只产生碰撞噪声**\n   （实测 `取配置项时缺失的键…` → `utils.py`）。修法不是调相似度阈值，\n   而是**不让非 ASCII 特征进向量空间**（它们本就不是代码标识符）——\n   去掉一整类噪声比压到某个数值以下更本质。修完后四路 Top-1 从 63.6% → **72.7%**。\n\n## 如实登记的结论（不粉饰）\n\n1. **组内差异在噪声内**：N=11，**1 题 = 9pp**。除\"基线 9.1% → 任一 P2 配置 45–73%\"\n   这个大幅提升外，P2 各组之间（63.6% vs 72.7% = 1 题）**不足以判定优劣**，\n   故**没有据此改默认配置**（N=11 上调默认即过拟合）。\n2. **BM25 单独仍是最强单配置**（Top-5 100%、MRR 0.826）。融合的价值在于\n   \"单通道全体失灵时兜底\"：仅符号 45.5%、仅向量 45.5%，融合 72.7%。\n3. **向量与 BM25 的重叠度已量化**：语料组平均 Jaccard **0.88**（小仓库候选池太小，\n   两路几乎重复），历史组 **0.25**（大仓库确实带新候选）。这解释了\n   \"向量在小仓库上加不了分\"——不是没用，而是被候选池太小掩盖了。\n4. **纯中文 issue 仍定位不到**（过滤噪声后更彻底），有用例钉住。\n5. **向量不是语义召回**：`load_config` 与 `read_settings` 在它看来毫不相干；\n   真语义需 embedding 模型（编译依赖 + 网络），与\"门禁离线\"纪律冲突，故未做。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **564 passed + 4 skipped**，0 failed / 0 error\n- `tests/test_index.py` 增至 29 例（新增向量确定性/字符 n-gram/排序/消融开关/截断）\n- `pp locate` → **8 组消融表**落盘 `eval/locate.json`\n- 真机：`pp eval --limit 3`（真模型+真沙箱）→ 3/3；沙箱 e2e → **15/15**\n- `pp check --json` ×2 → `ok=True files=78 checks=10 fail=[]`\n\nTREE_DIGEST: ec41a52f003833027191bdde37ed8a0e\n审查: 留待该阶段一并复审",
+      "expected_files": [
+        "eval/locate_bench.py",
+        "index/retrieval.py",
+        "index/vectors.py"
+      ]
+    },
+    {
+      "id": "383ac45a",
+      "commit": "383ac45a6d1c8029a496b103d90e9663ef33042d",
+      "query": "feat(p2): 代码索引 + 三路召回 + 定位消融表（P2 完成）\n\n## 新增模块（全部纯标准库：门禁无需网络 / Docker / 模型）\n\n1. `index/symbols.py` —— 符号索引。Python 用 `ast`（精确行号、方法带 parent、\n   收集调用名）；非 Python 用**近似正则**并**如实标注\"不是完整语法树\"**；\n   跳过重目录与链接类对象（与 search 同口径），遍历排序后进行 → **确定性**。\n2. `index/lexical.py` —— BM25（`k1=1.5, b=0.75`，**未调参**，已注明）+\n   **标识符拆分**：`load_config` → `load`/`config`，`ConfigError` → `config`/`error`，\n   同时保留整词；中文按整段保留（无分词器时比乱切更稳）。\n3. `index/retrieval.py` —— 三路召回 + **RRF 融合**（k=60）+ **可解释重排**\n   （符号名完全一致加权 / 查询词命中路径加权 / issue 未提测试时测试文件降权）。\n   选 RRF 而非分数加权：三路量纲完全不同（BM25 任意正数、符号是计数、图是跳数），\n   直接相加等于让量纲最大的那一路说话。\n4. `eval/locate_bench.py` —— 定位基准：两组题目 + 指标 + **6 组消融配置**。\n\n## 接入闭环\n\n`RepairOptions.use_index_localizer`（默认 True）；`locate` 节点先走索引，\n返回空时回退 P1 的符号+子串路径（保证可对比、可消融）。\n\n## 真实数字（`pp locate`，落盘 `eval/locate.json`）\n\n| 配置 | 历史组 Top-1 | Top-5 | MRR |\n|---|---|---|---|\n| **基线（P1 现有 locate）** | **30%** | **30%** | 0.300 |\n| 仅符号通道 | 70% | 70% | 0.700 |\n| 仅词法 BM25 | 80% | **100%** | 0.858 |\n| 符号+词法（无图无重排） | 80% | 90% | 0.842 |\n| 符号+词法+图（无重排） | 70% | 90% | 0.792 |\n| **三路+重排（P2 完整）** | **80%** | 90% | 0.867 |\n\n语料组（6 题）所有配置均 100% —— **天花板效应**（issue 直接点名了函数）。\n\n## 如实登记的限制与负面发现\n\n1. **样本很小**：历史 10 题、语料 6 题。历史组 **1 题 = 10pp**，\n   除\"30% → 80%\"这个大幅提升外，其余配置差异**都在噪声内**，不应据此调参。\n2. **history 组信息偏乐观**：提交信息常直接点名函数，比真实用户报告好定位；\n   故两组**分开报告，不混成一个数**。\n3. **图通道在这 10 题上对 Top-5 有轻微稀释**（BM25 单独 100% vs 完整 90%）：\n   RRF 的已知行为——新增通道给大量候选加小分，把原本第 5 的正确答案挤到第 6。\n   样本太小不足以判定普遍性，**未据此调参**（N=10 上调参即过拟合），登记待更大基准验证。\n4. **纯中文 issue 定位不到**（分词器不做翻译，代码无中文标识符）。已写用例\n   `test_localizing_a_pure_chinese_issue_is_a_known_limitation` 显式钉住，\n   避免被误当成已支持。\n\n## 第一版踩的坑（记录以免复发）\n\n基准初始实现里，索引路径相对**索引根**、而 `git show --name-only` 相对 **git 根**，\n两者直接比较 → **所有指标全 0**。现在显式归一坐标系，并加回归用例\n`test_locate_bench_expected_paths_share_the_index_coordinate_system`。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -o addopts=\"\"` → **558 passed + 4 skipped**，0 failed / 0 error\n- 新增 `tests/test_index.py` 23 例（符号/BM25/三路/重排/消融开关/基准坐标系/闭环接线）\n- `pp locate` → 消融表落盘 `eval/locate.json`\n- 真机：`pp eval --limit 3`（真模型+真沙箱）→ 3/3 通过；沙箱 e2e → **15/15**\n- `pp check --json` ×2 → `ok=True files=77 checks=10 fail=[]`\n\nTREE_DIGEST: 441af1137e1e081668188a4a068c63d3\n审查: 按节拍，P2 为新阶段，留待与该阶段一并复审",
+      "expected_files": [
+        "cli.py",
+        "eval/locate_bench.py",
+        "graph/repair.py",
+        "index/lexical.py",
+        "index/retrieval.py",
+        "index/symbols.py"
+      ]
+    },
+    {
+      "id": "0e02dbe8",
+      "commit": "0e02dbe8abdafd49610d3b0a5807e5427973e7d7",
+      "query": "fix(tools): 补丁按字节喂 git —— 修 CRLF 注入（编码侧）\n\n## BLOCKING（复审发现，本轮修复）\n\n`input=patch` 与 `text=True` 同时使用时，Windows 上 subprocess 会按 `os.linesep`\n把补丁的 `\\n` **翻译成 `\\r\\n`** 再喂给 git。两个方向都能观测到，且都是**静默错误结果**：\n\n- 对 **LF 文件**（本仓库就是 `i/lf w/lf`）做一行修改 → `rc=1 patch does not apply`\n  （git 在找带 CR 的上下文行），**合法补丁被拒**；删除补丁同样失败；\n- **新建文件**：补丁是 `+alpha\\n+beta`，落盘却是 `b'alpha\\r\\nbeta\\r\\n'`，函数仍返回 `ok`\n  → **静默改了行尾**。\n\n**为什么 535 项测试没抓到**：夹具全用 `Path.write_text`，在 Windows 上落盘就是 CRLF，\n\"夹具 CRLF + 补丁被翻成 CRLF\"两边一起错、恰好一致（`write_text(\"# demo\\n\")` → `b'# demo\\r\\n'`）。\n\n## 修法\n\n1. 新增 `_run_git_with_stdin`：`input=patch.encode(\"utf-8\")`（**字节**）、不走 text 模式、\n   输出显式 `.decode(\"utf-8\", \"replace\")`；`apply_patch` 真应用与 `_files_git_would_write` 都改；\n2. 抽出 `_git_env(root)`，三处调用共用\"剥凭据 / 不交互\"环境，避免某处漏隔离项；\n3. `_run_git` 补 `stdout is None` 的 fail-closed 守卫；\n4. 新增 `core/textio.write_text_lf`：所有会参与补丁/内容比对的写入（评测语料物化、补丁落盘、\n   `fs` 写文件、评测报告、基线文件）统一按字节写 UTF-8，杜绝 `write_text` 的平台换行翻译；\n5. 测试夹具新增 `write_lf()`（`write_bytes`），测试仓库加 `core.autocrlf=false`。\n\n## 新增回归用例（LF 语义）\n\n- 修改 LF 文件必须成功，且改后仍是 LF；\n- 删除 LF 文件必须成功；\n- 新建文件的**盘上字节严格是 `\\n`**（`b\"alpha\\nbeta\\n\"`，不得出现 `\\r\\n`）；\n- 清单道与 apply 必须看到**同一份补丁字节**；\n- `_run_git_with_stdin` 契约：字节喂入、UTF-8 解出 str、rc 如实返回。\n\n## 变异自证\n\n- **M-I**（退回 `input=str` + `text=True`）→ **KILLED**\n- **M-K**（绕过 stdin 直接跑 git）→ **KILLED**\n- **M-J**（`decode()` 与 `decode(\"utf-8\")` 互换）→ **SURVIVED，登记为等价变异**：\n  `bytes.decode()` 默认就是 UTF-8，唯一差异是不带参数时 `errors=strict`；\n  要区分需让 git 输出**非法 UTF-8 字节**（Windows 上无法造）。\n\n## 如实更正的两条旧登记（复审指出）\n\n1. **\"`--numstat` 对 mode/二进制/空文件本机 git 自己就拒绝\"——不实**。\n   以 bytes 喂 git 2.54：mode-only 是 `rc=0` + `0\\t0\\tkeep.txt` + `mode change …`，\n   空文件新建是 `rc=0` + `create mode 100644 …`；它们**经工具失败的真因就是 CRLF stdin**。\n2. 注释里说非 ASCII 名会被输出成 `\"J\\301\\264/…\"`（GBK 字节）**不准确**：\n   `\\301\\264` 是旧代码\"cp936 编码 stdin\"的产物；以 UTF-8 喂入时是 `\"J\\351\\223\\276/…\"`。\n   故 `_unquote_c_style` 按 UTF-8 解码**正确，无需双解码**。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- 全量套件**在两种代码页下各跑一遍**：cp936 → **535 passed + 4 skipped**；\n  UTF-8 模式 → **535 passed + 4 skipped**（0 failed / 0 error）\n- 真机 e2e（沙箱 4 类安全）→ **15/15**\n- CRLF 复现脚本 → 修改 LF 成功（`check_only -> OK`）、新建文件 `b'alpha\\nbeta\\n'`\n- 非 ASCII 路径矩阵 → **5/5**；junction 形态矩阵 → **12/12**\n- `pp check --json` ×2 → `ok=True files=71 checks=10 fail=[]`\n\nTREE_DIGEST: e9c8194461b6ab704c73d7207ab955dd\n审查: 第三十轮 REJECT（编码侧 CRLF）已修复；待下一轮复审",
+      "expected_files": [
+        "core/textio.py",
+        "eval/baseline.py",
+        "eval/dataset.py",
+        "eval/runner.py",
+        "graph/repair.py",
+        "tools/fs_server.py",
+        "tools/git_server.py"
+      ]
+    },
+    {
+      "id": "832671d0",
+      "commit": "832671d04a369f0fc23e342da3cc8875e8c8016b",
+      "query": "fix(tools): 验收项 2 收口 —— git 路径校验的 fail-closed 与解码修复\n\n## 背景\n\n验收项 2 前一轮以\"存档待收口\"提交，登记的残余风险是\"git 清单为空\"分支未经复审。\n本轮补掉，并在收口复审中被指出两处**真缺陷**（本轮一并修复）。\n\n## BLOCKING（复审发现，本轮修复）\n\n`subprocess.run(..., text=True)` **未指定 encoding**，于是按本地代码页解码 git 的\nUTF-8 输出。在 cp936 机器上：\n\n- reader 线程抛 `UnicodeDecodeError` → **`stdout is None` 而 `rc == 0`**；\n- 旧代码 `(proc.stdout or \"\")` 把它当成\"空清单\"→ 守卫 3 误拒**合法**补丁，\n  且报错文案是误导性的\"不写任何文件\"。\n\n即\"无法验证\"又一次被静默当成\"已验证\"，只是换了个成因——正是我上一轮声称关闭的洞。\n\n**修法**：\n1. 三处 `subprocess.run` 全部显式 `encoding=\"utf-8\", errors=\"replace\"`；\n2. `stdout is None` 一律判为\"无法枚举\"→ `None`（fail-closed）；\n3. 加 `-c core.quotePath=false`，让 git 直接输出**真实路径**（工具调用方需要真实名）。\n\n同一批还修了清单道的盲区：它此前只 `strip('\"')`、**不做 C 反转义**（静态道做了），\n于是凡被 git 引号化的名字（非 ASCII / 控制字符）拿到的是**不存在的路径**——\n\"第二道网独立成立\"只对 ASCII 名成立（复审实测 junction `J链`）。\n修法：抽出 `_names_from_numstat` 统一做 C 反转义（还原失败 → `None`），\n并补上 `--summary` 里 `create`/`delete` 行（**没有** `(NN%)` 后缀）被正则漏掉的形态，\n同一文件同时出现在两种行时去重保序。\n\n## fail-closed（上一轮登记项）\n\n- `_files_git_would_write` 返回 `list[str] | None`：`None` = 无法枚举；\n- `apply_patch` 遇 `None` → 拒绝；清单为空但补丁声明了路径 → 拒绝（自相矛盾）。\n\n## 变异自证（§8.5）\n\n**8/8 KILLED**（两批各 4 条）：\n- A 段：解析失败拒绝 / 自相矛盾拒绝 / `return None` 退回 `[]` / 逐文件校验；\n- B 段：numstat 的 encoding / `stdout is None` 处理 / C 反转义 / `_run_git` 的 encoding。\n\n其中\"逐文件校验\"与\"`_run_git` 的 encoding\"一开始都 **SURVIVED**：\n- 前者因为静态道与清单道重叠 → 补**分层独立验证**用例（把静态道人为致盲）；\n- 后者因为只有 ASCII 路径用例 → 补非 ASCII 的 `status`/`diff` 用例。\n\n## 如实登记（§8.5 第 5 条）\n\n- `GitListError` 是死代码（全仓无 raise）→ **已删除**；\n- 守卫 3 在生产路径上**几乎不可达**（复审构造 10 种形态，`--numstat` 全部 rc=128），\n  保留是因为\"两侧不一致就拒绝\"是对的原则，且已有用例钉住；\n- `_names_from_numstat` 的 C 反转义在 `core.quotePath=false` 下对非 ASCII 名**冗余**，\n  一旦该配置被改动就成为唯一防线 → 抽成独立函数 + 解析规则直测；\n- **已知边界**：`--numstat` 对纯 mode 变更 / 二进制 / 空文件新建，本机 git 2.54 自己就拒绝\n  （改前改后一致），\"防误伤 7 类\"不含这三类。\n\n## 平台相关性的教训\n\n解码缺陷**依赖环境**：本机 Python 的 subprocess 恰好按 UTF-8 解码，复审者机器直接抛异常。\n因此解码契约用**结构化断言**（检查调用点是否传了 `encoding`）钉住，\n而不是\"复现旧缺陷\"的行为断言（后者在部分机器上会假绿）。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- 全量套件 **在两种代码页下各跑一遍**：cp936 → **532 passed + 4 skipped**；\n  UTF-8 模式 → **532 passed + 4 skipped**（0 failed / 0 error）\n- 真机 e2e（沙箱 4 类安全）→ **15/15**\n- 非 ASCII 路径矩阵 → **5/5**（越界拒绝 / 根外字节不变 / 合法非 ASCII 可应用），两种代码页下均通过\n- junction 形态矩阵 → **12/12**\n- 合法补丁防误伤：改 / 新建 / 删除 / 重命名 / 多文件 / 引号名 / 非 `a/b` 前缀 → 全部 OK\n- `pp check --json` ×2 → `ok=True files=70 checks=10 fail=[]`\n\nTREE_DIGEST: d461c4825755ebed60c7e4d1c879e47a\n审查: 第二十九轮 REJECT（解码 + C 反转义）已修复；待下一轮复审",
+      "expected_files": [
+        "tools/git_server.py"
+      ]
+    },
+    {
+      "id": "806e36c6",
+      "commit": "806e36c6c0499604ed77ae904661aa2db00abfaf",
+      "query": "feat(p6): 验收项 7 —— 一键部署 + Web 轨迹回放面板\n\n## 功能\n\n- `src/patchpilot/api/app.py`：FastAPI **只读**面板\n  - `/` 单页（轨迹列表 + span 时间线 + 评测指标）\n  - `/api/traces`、`/api/traces/{id}`、`/api/evals`、`/api/health`\n- `pp serve`：起面板（host/port/trace-dir/eval-report）。\n- `docker/app/Dockerfile` + `docker-compose.yml` 的 `panel` 服务：\n  trace 与评测产物**只读**挂载、HEALTHCHECK 探活、`restart: unless-stopped`。\n\n## 三个刻意的设计选择\n\n1. **零前端构建**：单页内联 HTML+JS，没有 npm/打包步骤。\n   \"一键部署\"若需要先装 node 跑 build，就不叫一键了（镜像仅 237MB）。\n2. **只读**：不提供任何执行入口——不把\"远程执行不可信代码\"暴露到 Web 上。\n3. **无状态**：数据源都是文件（`traces/*.jsonl`、`eval/report.json`），\n   面板重启不丢数据，也不需要数据库。\n\n## 真机验证\n\n- `docker build -f docker/app/Dockerfile -t patchpilot-panel:0.1.0 .` → 成功（64s，237MB）\n- `docker run` 后真实 HTTP 请求：\n  - `/api/health` → `{\"ok\":true,\"traces\":1}`（读到了宿主真实 trace）\n  - `/api/traces` → `eca95a80fa48432f`（就是 `pp run` 那次任务的 trace）\n  - `/api/evals` → 返回 pass@1 等指标\n  - `/` → 6607 字节页面，含\"span 时间线\"\n- `docker compose config` 校验通过，4 个服务（panel/postgres/qdrant/redis）\n\n## 容错（测试覆盖）\n\ntrace 目录不存在 → 空列表而非报错（首次部署就是这种状态）；\nJSONL 坏行跳过；缺评测报告 → `available: false`；\n未定价模型在面板上显式标\"⚠成本不可信\"，不显示成\"一切正常\"。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **519 passed + 4 skipped**，0 failed / 0 error\n- `tests/test_panel_api.py` 13 例，含**真起 uvicorn 子进程**用真 HTTP 请求验证\n  （只测 TestClient 会漏掉\"uvicorn 起不来/参数拼错\"）\n- 另有断言：页面不得引用任何外部 CDN（零构建、离线可用）\n- `pp check --json` ×2 → `ok=True files=70 checks=10 fail=[]`\n\nTREE_DIGEST: e72c12026ce976eb27d80232b5e02c8e\n审查: 按用户指示的节拍，留待以后与验收项 7 一并复审",
+      "expected_files": [
+        "api/__init__.py",
+        "api/app.py",
+        "cli.py"
+      ]
+    },
+    {
+      "id": "4a97986f",
+      "commit": "4a97986f7e89756ddf54063361992b9eb19e229c",
+      "query": "feat(ci): 验收项 5 —— 回归门禁（改坏 prompt → CI 变红 + 指标 diff）\n\n## 功能\n\n- `src/patchpilot/eval/baseline.py`：基线对比。基线是**提交进版本库的数据**\n  （`eval/baseline.json`），由一次确认合格的运行产出；之后每次对比\n  `pass@1` / 成本 / P95，并给出**逐题**得失（哪几题从通过变失败、哪几题新增通过）。\n- `pp eval --baseline PATH`：退化 → **退出码 2**；`--write-baseline PATH` 刷新基线；\n  `--strict-cost` 让成本/延时也阻塞。\n- `.github/workflows/ci.yml`：两道门禁\n  - `gate`：`pp check` + 单测（无需密钥/Docker/网络，**必过**）；\n  - `eval-regression`：真模型 + 真沙箱跑基线对比（缺密钥时**显式跳过并告警**，不假绿）。\n\n## 真机验证（本项的关键证据）\n\n| 场景 | pass@1 | 退出码 |\n|---|---|---|\n| 未改动 | 100% | **0**（\"无回归\"） |\n| prompt 改成\"不要输出任何 diff 或代码块\" | **50%** | **2** |\n\ndiff 点名了退化的题（`fast-003-wrong-exception` 等），并附带成本/延时的提示行。\n\n## 两次自我纠错（都很有价值）\n\n1. **第一次\"改坏\"没有效果**：改成\"用散文解释\"后 pass@1 仍是 100%——因为\n   `extract_patch` 会从散文里把 ```diff 围栏抠出来。**教训**：验证门禁的\"改坏\"\n   必须真的掐断被判定的信号，否则测的是自己的想象。\n2. **门禁误报**：还原源码后复跑仍判红（成本 0.004268 → 0.005673，+33% 超过当时 30% 容差）。\n   根因是**采样噪声**（这次模型多转了几轮），不是回归。**修法**：`pass@1` 是唯一默认\n   阻塞项；成本/延时默认只提示（容差 100%，`--strict-cost` 可收紧）。\n   一个在未改动代码上也会变红的门禁，维护者会很快学会忽略它。\n3. 顺带修掉：`--limit` 子集运行把\"没跑\"的题算成\"退化\"（假的丢失）——\n   改为只在本次真正跑过的题目范围内做逐题对比，并提示\"对比不完整\"。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **506 passed + 4 skipped**，0 failed / 0 error\n- 真机演示 `.tmp/demo_regression_gate2.py` → **PASS**（未改动绿 / 改坏红）\n- 新增 `tests/test_baseline.py` 11 例，专测**不漏报**（pass@1 下降必须红）\n  与**不误报**（成本漂移、子集运行、环境漂移都不能红）\n- CI 工作流 YAML 已解析验证（2 job、步骤齐全）\n- `pp check --json` ×2 → `ok=True files=66 checks=10 fail=[]`\n\nTREE_DIGEST: 92c75f2e460043c086e221385728db5b\n审查: 按用户指示的节拍，留待以后与验收项 5 一并复审",
+      "expected_files": [
+        "cli.py",
+        "eval/baseline.py"
+      ]
+    },
+    {
+      "id": "5100a1dc",
+      "commit": "5100a1dc641010ee05eec47b3761ac497c26c310",
+      "query": "feat(p5): 验收项 6 —— 全链路可观测（四类 span）+ `pp trace` 回放\n\n## 背景\n\n`observability/tracing.py` 已有 `Tracer`，但**修复闭环一行都没用**：P0 的 `minimal.py` 用，\nP3 的 `repair.py` 没用，所以验收项 6 一直停在\"部分完成\"。\n\n## 改动\n\n1. `RepairOptions` 增加 `trace_dir` / `price_overrides`；为 None 时**完全不产生 IO**\n   （离线测试与门禁不受影响）。\n2. 四类 span 全部接入：\n   - **检索** `retrieval.search`（定位阶段的符号/文本检索）\n   - **LLM** `llm.generate`（带 model 与 prompt 字符数）\n   - **工具** `tool.apply_patch`（git）、`tool.run_tests`（沙箱，带 exit_code/timed_out）\n   - **成本** `record_usage`（token 与 cost_usd；未定价模型显式标 `cost_unknown`）\n3. `finalize` 落盘 trace 并把路径写回状态；`pp run` 结果表打印 trace 路径。\n4. 新增 `pp trace --limit N --verbose`：读 JSONL，按任务展开 span 耗时与属性。\n\n## 真机实测\n\n单个任务的 trace：\n\n| span | 耗时 |\n|---|---|\n| retrieval.search | 28.9ms |\n| llm.generate | 1557.8ms |\n| tool.apply_patch | 393.7ms |\n| tool.run_tests | 1855.0ms |\n\n总耗时 3835ms、token 162+235、成本 **$0.000165**、模型 `deepseek-flash`。\n\n## 修掉的 1 个真 bug（口径不一致）\n\n`_charge` 只要 `LLMResponse.cost_usd is None` 就把模型记成\"未定价\"，**不看价格表**；\n而 `Tracer.record_usage` 会按价格表算出正成本 → trace 里出现\n`cost_usd > 0` 与 `cost_unknown = true` **自相矛盾**的组合（真机实测到）。\n修法：`_charge` 先用 `estimate_cost_usd(..., options.price_overrides)` 再决定是否记未定价。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **495 passed + 4 skipped**，0 failed / 0 error\n- 真机 `pp run` → 1 轮通过，trace 落盘；真机 `pp trace --verbose` → 四类 span 正确显示\n- 新增 `tests/test_tracing_pipeline.py` 6 例，断言落在 **trace 的实际内容**上\n  （不是\"Tracer 被调用过\"），并钉住\"未定价必须标 cost_unknown 而不是记 0\"\n- `pp check --json` ×2 → `ok=True files=63 checks=10 fail=[]`\n\nTREE_DIGEST: 1a4952b45d2112fca453cc81dc40f63a\n审查: 按用户指示的节拍，留待以后与验收项 6 一并复审",
+      "expected_files": [
+        "cli.py",
+        "graph/repair.py"
+      ]
+    },
+    {
+      "id": "ea9e6923",
+      "commit": "ea9e69237d0d3df3b66a23d676201d1579d8a113",
+      "query": "feat(p4): 验收项 3/4 —— `pp eval` 出真实数字（pass@1 100% / $0.0025 / P95 11.3s）+ 可复现报告\n\n## 功能\n\n- `src/patchpilot/eval/dataset.py`：评测集格式（JSON 容器或 JSONL）+ **加载期校验**。\n  拒绝四类会让\"度量衡\"失效的题：`fail_to_pass` 为空、镜像用 `latest`、\n  仓库/issue 不存在、题目 id 重复。\n- `src/patchpilot/eval/runner.py`：评测运行器。判定口径对齐 SWE-bench：\n  ① 先验证 `fail_to_pass` 在**修复前确实失败**（题目前提）；\n  ② 让修复闭环跑；③ 用闭环产出的补丁在**全新副本**上独立复核\n  `fail_to_pass + pass_to_pass`。修复前就绿的题标 `invalid_task` 并**从分母排除**。\n- `pp eval`：逐题表格 + 汇总指标（pass@1 / 成本 / token / 平均与 P95 耗时 /\n  失败分布 / 可复现信息），并把完整报告落盘 JSON（验收项 4：\n  `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`）。\n- `eval/fast_corpus.json`：自建 FastEval 6 题（**以数据入库**，理由见下）。\n\n## 真实数字（本轮产出，可复跑 `pp eval`）\n\n| 指标 | 值 |\n|---|---|\n| pass@1 | **6/6 = 100%**（全部 1 轮通过） |\n| 总成本 | **$0.0025** |\n| 总 token | 5,865 |\n| 平均 / P95 耗时 | **8.9s / 11.3s** |\n| 环境 | `deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312` |\n\n这是**自建 6 题**的结果，不与 SWE-bench 数字混谈；BenchEval（Lite 50 题）属后续。\n\n## 过程中修掉的 4 个真 bug（都由\"数字不对\"倒查出来）\n\n1. **`workspace` 不是声明的状态通道** —— LangGraph **静默丢弃**未声明的键，\n   于是 `run_tests` 拿到的副本路径恒为空、悄悄回落到**未打补丁的源仓库**。\n   表现极具迷惑性：6 道题全 failed，但每轮补丁**逐字符相同且内容完全正确**。\n   与 `attempts` 同一类坑。已补通道 + 端到端用例钉住（断言 runner 收到的目录里\n   **必须已含补丁**且不等于源仓库）。\n2. **补丁产物写进被评测的仓库**：`finalize` 原先按 `issue_file.parent` 落盘，\n   评测时那正是语料目录 → 6 个目录被写入 `*.diff`。新增 `RepairOptions.output_dir`。\n3. **5 道题前提不成立**（自建脚本在**真沙箱**里逐题验证后才暴露）：\n   - `fast-001` 的 `pass_to_pass` 断言本身写错；\n   - `fast-002` 的 bug 不会让那条断言失败；\n   - `fast-004` 只有一个匹配键时 `del` 后循环即结束、**不抛 RuntimeError**；\n   - `fast-005` 的 Python `sorted(reverse=True)` 是**稳定**的，同分本来就保序（bug 不存在）；\n   - `fast-006` 的 `\"a=\".split(\"=\")` 长度为 2、**不抛 ValueError**。\n   全部重写后 6/6 成立。若不校验，这 5 题会让 pass@1 变成无意义的数字。\n4. **语料不能放在仓库里当 `.py`**：门禁把语料里的 `tests/test_*.py` 当成项目自己的测试\n   收集（而它们**故意失败**），ruff 也报语料里**故意**的可变默认参数。\n   改为语料以 **JSON 数据**入库、运行时物化到工作目录——既完全可复现，\n   又不污染项目自身的门禁。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **489 passed + 4 skipped**，0 failed / 0 error\n- 真机 `pp eval`（真 DeepSeek + 真 Docker）→ **6/6 passed**，报告落盘 `eval/report.json`\n- 语料前提校验（真沙箱逐题）→ **6/6 成立**\n- `pp check --json` ×2 → `ok=True files=62 checks=10 fail=[]`，pytest 范围 17/17\n\nTREE_DIGEST: d3a998de1bfdfe74c95075e394a1504d\n审查: 按用户指示的节拍，留待以后与验收项 3/4 一并复审",
+      "expected_files": [
+        "cli.py",
+        "eval/dataset.py",
+        "eval/runner.py",
+        "graph/repair.py"
+      ]
+    },
+    {
+      "id": "2c36a3bc",
+      "commit": "2c36a3bc14fe4ccb688a6237d0954c0948c2b951",
+      "query": "feat(p3): 验收项 1 —— `pp run` 一条命令在本地仓库上完成一次修复\n\n## 功能\n\n- `src/patchpilot/graph/repair.py`：**8 节点修复闭环**\n  load_issue → locate → generate → apply → run_tests → evaluate → reflect → finalize。\n  路由含三条早停：定位失败 / 补丁打不上 / 轮数与预算耗尽。\n  补丁**只打到工作副本**，用户仓库在任何路径下都不被改动。\n- `pp run --repo . --issue-file bug.md`（`cli.py`）：验收项 1 的命令行入口。\n- 可测试性：模型（LLMClient）与测试执行（TestRunner）、补丁应用（PatchApplier）\n  都是可注入协议 → **整条图可离线端到端验证**；真机版本另有独立用例。\n\n## 真机验证\n\n`tests/test_repair_e2e.py`：**真 DeepSeek 模型 + 真 Docker 沙箱**在临时仓库上跑完整条链路，\n**修好 bug 且测试转绿**（75s），并断言用户仓库一个字节未变。\n这是首次让\"模型 → 补丁 → 沙箱验证\"闭环在真机上跑通。\n\n## 过程中修掉的 4 个真 bug（都不是测试问题）\n\n1. **预算熔断永不触发**：`attempts` 没进 `RepairState`，而 `BudgetTracker.to_state()` 写该键\n   → LangGraph 不持久化，`from_state` 每次从 0 开始，`max_attempts` 形同虚设\n   （实测 max_rounds=2 跑了十几轮）。P0 同类问题在新图上的复发。\n2. **`started_at=0.0` 让第一个节点就熔断**：时长上限算出 1.3e6 秒\"已用时长\"。\n3. **`Event loop is closed`**：`AsyncOpenAI` 连接池绑定创建它的事件循环，而图节点是同步的；\n   原先每次 `asyncio.run` 建新循环用完即关，**第二轮必崩**。\n   修法：`core/llm.py` 新增 `complete_sync`/`run_sync`（常驻循环 + 后台守护线程）。\n4. **`_default_applier` 形参名与协议不一致**（`root` vs `workspace`）→ 真机首次调用抛 TypeError；\n   而错误处理把 `workspace` 重置成 \".\"，**把原因掩盖成\"补丁应用失败\"**。签名对齐 + 不再掩盖。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **468 passed + 4 skipped**，0 failed / 0 error（收集 472）\n- 真机端到端 → **1 passed**；`pp check --json` ×2 → `ok=True files=57 checks=10 fail=[]`\n- 新增单测：`tests/test_repair_graph.py` 15 例（离线）+ `tests/test_repair_e2e.py`（真机）\n\nTREE_DIGEST: 26a0c86b2858af50ea3b32111b427bc1\n审查: 按用户指示的节拍，本批与该验收项一并留待以后复审（不再逐批复审）",
+      "expected_files": [
+        "cli.py",
+        "core/llm.py",
+        "graph/repair.py"
+      ]
+    },
+    {
+      "id": "0f5793f5",
+      "commit": "0f5793f57043dee2355bf6a83bb43b2faacc9c54",
+      "query": "feat(p1): 沙箱驱动层 + 4 个 MCP server（验收项 2 存档，待收口）\n\n## 为什么存档提交\n\n按用户指示调整节拍：验收项 2 已经过多轮对抗性复审（第二十四至二十七轮连续判 BLOCKING，\n每轮都是**真实的越界写/读逃逸**，均已修复），但继续在同一项上迭代会挤占功能开发。\n因此本批以\"门禁通过 + 真机 15/15 + 452 项单测全绿\"的状态**存档提交**，\n**不标记为已验收**（PLAN §1 第 2 项状态为 🔧 待收口），残余点如实登记在变更日志里。\n\n## 功能（P1 补全：之前只有纯逻辑层，驱动层与 MCP 一行未写）\n\n- `src/patchpilot/sandbox/manager.py`：沙箱薄驱动。**不拼任何参数**（安全语义仍由\n  `policy.build_run_args` 独占），只做 复制副本 → 起容器 → 双通道超时 → 读回结果。\n  三个真机踩过的坑落在实现里：宿主超时后必须显式 `docker rm -f`；结果走 JUnit 文件通道\n  （不解析 stdout）；JUnit 写到挂载副本内（rootfs 只读、/tmp 是 tmpfs）。\n  并按 `workspace.py` 的声明**真的调用** `find_escaping_links`（此前无生产调用点）。\n- `docker/sandbox/Dockerfile` → `patchpilot-sandbox:0.1.0-py312`：官方 slim 不含 pytest，\n  而容器 `--network none` 无法 pip install，故自建并锁定版本；`policy.DEFAULT_IMAGE` 随之切换。\n- `src/patchpilot/tools/`：4 个 server 的工具逻辑（纯标准库）——\n  `fs`（路径白名单）/ `git`（两层白名单 + 补丁路径校验）/ `pytest_runner`\n  （命令白名单 + pytest 参数白名单）/ `search`（接口与 P2 符号索引一致）。\n- `src/patchpilot/tools/servers.py` + `pp mcp <fs|git|test|search>`：stdio 入口，\n  兼容 mcp 1.x/2.x（2.x 把 FastMCP 改名 MCPServer）。\n\n## 安全修复（本轮复审暴露的真实逃逸）\n\n- **search 根约束被 junction 击穿**：`rglob` 会递归进入 junction（`is_symlink()` 为 False），\n  实测可把宿主私钥搜出来。修法：手工 `os.walk(followlinks=False)` + `policy.is_link_like`\n  按目录剪枝 + 逐文件 `resolve()` 复核。\n- **`git apply` 写穿 junction**：纯文本校验看不见 junction，四轮形态演进\n  （指令行 → 指令名前缀 → 引号 C 转义 / `-p1` 剥段 → **以 `git apply --numstat` 的\n  真实清单为准**）。最终形态：静态道 + git 清单道双重把关。\n- **`preflight._walk_files`** 同根因改用 `is_link_like`（此前会把根外字节纳入摘要/密钥扫描，\n  自引用 junction 还会指数放大：实测 8.5s、40 条 `self/self/...`）。\n\n## 验证\n\n- `ruff check src tests` → All checks passed\n- `pytest -p no:cacheprovider -q -rA` → **452 passed + 4 skipped**，0 failed / 0 error\n- 真机 Docker 端到端 `.tmp/verify_sandbox_container.py` → **15/15**\n  （网络不可达 / rootfs 只读 / 非 root uid=1000 / **内存 OOM rc=137** /\n  **pids 超限 fork 被拒（pids.max=512）** / 超时 8.2s 截断且容器无残留 / 30 类字段级非法值全拒）\n- junction 形态矩阵 12/12 拒绝且根外字节不变，根内合法补丁 3/3 仍成功\n- `pp check --json` ×2 → `ok=True files=54 checks=10 fail=[]`，\n  `TREE_DIGEST = cd9de09a7c0ff94416981be4895c9f09`（两次逐字符相同）\n\nTREE_DIGEST: cd9de09a7c0ff94416981be4895c9f09\n审查: 第二十四至二十七轮 code-reviewer 连续判 BLOCKING（均已修复）；\n      第二十八轮复审按用户指示中止，本项状态为\"待收口\"而非\"已验收\"",
+      "expected_files": [
+        "cli.py",
+        "core/config.py",
+        "core/preflight.py",
+        "sandbox/__init__.py",
+        "sandbox/manager.py",
+        "sandbox/policy.py",
+        "tools/__init__.py",
+        "tools/fs_server.py",
+        "tools/git_server.py",
+        "tools/pytest_runner.py",
+        "tools/search_server.py",
+        "tools/servers.py"
+      ]
+    },
+    {
+      "id": "0e933454",
+      "commit": "0e9334540f515a304a41f5852e5ca7e0bdcb9a0f",
+      "query": "fix(preflight): 收尾第八轮复审的 4 条非阻塞项\n\n1. `collect_pytest_scope` 已返回四元组，但 `_check_pytest` 把它截断成三元组，\n   收集期报错永远进不了报告 → 新增 `PreflightReport.pytest_collect_errors` 并接线；\n   引入类型别名 `PytestScope`，所有返回点与注解统一（\"改一处漏一处\"正是该坑的成因）。\n2. `environment_issue` 从\"猜输出文本\"改为**对 basetemp 的写探针**：不猜 pytest 输出，\n   既不会被断言消息里引用的 `PermissionError` 误触发，也不会漏判真正的权限问题。\n3. 删除 `os.environ.update(_git_climb_env(root))` 这一不回滚的进程级副作用；\n   界标只经 `extra_env=_pytest_env(root)` 传给 pytest 子进程（收集与执行两处都传）。\n4. `--basetemp` 文案核对：已发布字节里即为新文案，无需修改。\n\n新增回归用例：`test_report_carries_pytest_collect_errors`（用\"导入不存在的模块\"制造真正的\n收集期错误——模块级 `pytest.skip(allow_module_level=True)` **不会**产生 ERROR 行，\n这是我第一版夹具失败后才确认的事实）、写探针正例/反例/端到端三例。\n\nfeat(sandbox): P1 纯逻辑层迁入 src/（策略 / 工作区复制 / JUnit 解析）\n\n- `sandbox_policy.py` → `sandbox/policy.py`、`junit.py` → `sandbox/junit.py`、\n  `workspace_copy.py` → `sandbox/workspace.py`（逐字节复制后仅改 import 与 docstring）；\n  `sandbox/__init__.py` 从占位改为真正的导出面（16 个公开名 + `__all__`）。\n- 三个离线验证器改写为 pytest，junction 分支在本机真跑（symlink 用例在 Windows 上\n  按平台 skip，同一逻辑由 junction 覆盖）。\n\n安全修复（第九至十二轮对抗性审查的真机判决性证据，四轮各击穿一版参数校验）：\n\n- **删除裸 `extra_args`，参数面改为类型化字段**（`init`/`interactive`/`tty`/`labels`/\n  `hostname`/`stop_timeout_s`）。四轮里每轮都被同一类缺陷的新拼写击穿（短选项粘连 →\n  布尔短选项捆绑 → 悬空取值吃掉镜像名 → flag 紧跟 flag），其中\"取值/位置错位\"\n  原理上不可检。改类型化字段后状态机与\"拒绝拼写表\"整体消失。\n- 非 root 不变量按**数值**判定（`00:0`/`0:1000`/`root:root`/全角数字全部拒绝）；\n  `build_run_args` 补配对校验与镜像位置断言；重复 flag 直接拒绝。\n- `workdir` 校验：绝对路径、无逗号/空白/`..` 回溯、且限定在 `/workspace` 或 `/tmp` 子树。\n- `.git` 凭据与钩子剥离补全：任意祖先段是 git 仓库目录（`.git` 或以 `.git` 结尾），\n  覆盖 `vendor/.git-credentials`、`nested/.git/.git-credentials`、`deps/lib.git/config`、\n  `vendor/.git/modules/sub/hooks` 等此前会带着明文令牌进副本的路径。\n- `junit.parse_junit_xml/text` 对不可信 XML 加 8 MiB 体积上限并拒绝 `DOCTYPE/ENTITY`。\n- 门禁自身可并发（basetemp 每运行独占 `run-<pid>-<hex>`）、夹具隔离外层仓库、\n  `worktree_matches_index` 覆盖\"索引里有而工作区已删除\"的反方向。\n\nTREE_DIGEST: fa6a097a81586d871c55d02a2fb4312c\n审查: code-reviewer 第十二轮 APPROVE（SCOPE: WORKTREE，摘要逐字符一致；其真机字段注入\n      矩阵 62 组未发现 root/宿主挂载/换镜像/丢命令首元素的路径）\n验证: ruff 全绿; pytest 193 passed + 3 skipped；pp check=OK (pass=10 fail=0) files=42;\n      连续两次 pp check 摘要逐字符相同；真机 Docker 端到端 11/11",
+      "expected_files": [
+        "cli.py",
+        "core/preflight.py",
+        "sandbox/__init__.py",
+        "sandbox/junit.py",
+        "sandbox/policy.py",
+        "sandbox/workspace.py"
+      ]
+    },
+    {
+      "id": "0ad9ea81",
+      "commit": "0ad9ea818d01bdb11b27512fc15e213657bd0f6a",
+      "query": "feat(p0): 工程骨架与确定性门禁（含第七轮 3 项阻塞修复）\n\nP0 骨架：CLI（doctor/dev-up/dev-down/smoke/check/info）、Pydantic v2 配置与领域模型、\n四重预算熔断（token/金额/时长/轮次）真接入编排层、LangGraph 最小图 + 条件回环、\nmemory/sqlite/postgres 三种 checkpointer、JSONL trace（用量/成本/cost_unknown）、\ndocker compose（postgres/redis/qdrant）、CI 复用同一套门禁。\n\n确定性门禁 `pp check`（10 项，实测 pass=10 fail=0 skip=0）：\nsyntax / ruff / pytest / secret_scan / gitignore / skip_rules / scope_agreement /\ngit_scope / worktree_matches_index / env_not_tracked。\n\n本轮修复第七轮复审裁定的 3 项阻塞，并补齐回归用例（preflight 45 项，全套 92 passed + 1 skipped）：\n1. worktree_matches_index 只覆盖索引、空索引 skip → 以 iter_scan_files 的枚举集合为准\n   绑定索引字节；未暂存/空索引/blob 不一致一律 fail；并补反方向——索引里有而工作区\n   已删除（AD）也 fail（实测该状态的文件仍会进提交）。\n2. pytest 执行范围不受摘要约束 → 显式传入摘要集合中的 test_*.py，并用 --collect-only\n   要求全覆盖，缺失清单与收集期报错分别写入报告。\n3. 非 UTF-8 编码密钥静默 pass → 根因是解码前未嗅探 NUL；最终改为对含 NUL 的文件\n   额外扫描「去 NUL 后按 UTF-8」与 UTF-16 解码形式（11 种编码形态全部检出，\n   8 种旁路构造全部失败），无 NUL 的非 UTF-8 文本仍 fail-closed。\n\n八轮复审追加修复（1 项 BLOCKING + 4 项非阻塞）：\n- 子目录 root 静默丢失索引绑定：`.git` 只在仓库根，故\"是子目录\"与\"不在仓库里\"表现相同\n  → 拆出 find_toplevel()，在仓库内但非仓库根一律 fail，只有真不在仓库才 skip。\n- environment_issue 不再匹配人类可读的 \"access is denied\"（避免把真实失败误判成环境问题）。\n- --basetemp 文案改为\"父目录\"（每次运行在其下建独占 run-<pid>-<hex> 子目录）。\n- 门禁自身可并发：basetemp 每运行独占（此前并发门禁互删临时目录导致假失败）。\n- 夹具用 GIT_CEILING_DIRECTORIES 隔离外层仓库，并自证 .git 已创建。\n\nTREE_DIGEST: ab1ce173380d5bb2ae8fc574fad4c4d1\n审查: code-reviewer 第八轮 APPROVE（SCOPE: WORKTREE，摘要逐字符一致）\n验证: ruff 全绿; pytest 92 passed + 1 skipped (93 收集); pp check=OK (pass=10 fail=0);\n      连续两次 pp check 摘要逐字符相同; 从索引字节重建的全新检出复算同一摘要",
+      "expected_files": [
+        "__init__.py",
+        "cli.py",
+        "core/__init__.py",
+        "core/budget.py",
+        "core/config.py",
+        "core/llm.py",
+        "core/logging.py",
+        "core/models.py",
+        "core/preflight.py",
+        "core/pricing.py",
+        "eval/__init__.py",
+        "graph/__init__.py",
+        "graph/checkpointer.py",
+        "graph/minimal.py",
+        "index/__init__.py",
+        "observability/__init__.py",
+        "observability/tracing.py",
+        "sandbox/__init__.py"
+      ]
+    }
+  ]
+}

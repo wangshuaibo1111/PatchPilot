@@ -202,7 +202,7 @@ def test_load_subset_accepts_host_python_without_image(tmp_path: Path) -> None:
     path = tmp_path / "subset.json"
     write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
 
-    instances = load_subset(path)
+    instances = load_subset(path, validate_interpreters=False)
 
     assert instances[0].python == "python3.9"
     assert instances[0].image == ""
@@ -229,7 +229,7 @@ def test_load_subset_expands_env_placeholder(
     path = tmp_path / "subset.json"
     write_lf(path, json.dumps({"instances": [payload]}, ensure_ascii=False))
 
-    instances = load_subset(path)
+    instances = load_subset(path, validate_interpreters=False)
 
     assert instances[0].python == "/opt/py39/bin/python"
 

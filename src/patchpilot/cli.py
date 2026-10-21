@@ -711,6 +711,9 @@ def locate(
     synthetic: Path | None = typer.Option(
         None, "--synthetic", help="合成语料 JSON（默认 eval/locate_corpus.json）"
     ),
+    frozen: Path | None = typer.Option(
+        None, "--frozen", help="冻结题集 JSON（默认 eval/locate_cases.json）"
+    ),
     history: int = typer.Option(60, "--history", help="从提交历史取多少条提交流程作题"),
     git_root: Path = typer.Option(Path("."), "--git-root", help="git 仓库根"),
     out: Path | None = typer.Option(None, "--out", help="把消融表写成 JSON"),
@@ -731,6 +734,7 @@ def locate(
         raise typer.BadParameter(f"--scope 不是目录: {resolved_scope}")
     corpus_path = corpus or Path("eval/fast_corpus.json")
     synthetic_path = synthetic or Path("eval/locate_corpus.json")
+    frozen_path = frozen or Path("eval/locate_cases.json")
 
     with console.status("建索引并跑消融…"):
         outcome = run_locate_bench(
@@ -738,6 +742,7 @@ def locate(
             scope=resolved_scope,
             corpus_path=corpus_path if corpus_path.is_file() else None,
             synthetic_path=synthetic_path if synthetic_path.is_file() else None,
+            frozen_path=frozen_path if frozen_path.is_file() else None,
             history_limit=history,
         )
 
@@ -827,8 +832,6 @@ def swebench(
 
     root = (work_root or Path(tempfile.gettempdir()) / "patchpilot-swebench").resolve()
     llm = build_llm(settings)
-    payload = json.loads(subset.read_text(encoding="utf-8"))
-    pythonpath = str(payload.get("container_pythonpath") or "") or None
 
     def propose(instance, attempt: int):  # noqa: ANN001, ANN202
         from patchpilot.core.pricing import estimate_cost_usd
@@ -851,8 +854,7 @@ def swebench(
 
     with console.status("跑 SWE-bench 子集…"):
         report = evaluate(
-            instances, propose_patch=propose, work_root=root,
-            container_pythonpath=pythonpath, max_rounds=rounds,
+            instances, propose_patch=propose, work_root=root, max_rounds=rounds,
         )
 
     table = Table(title="SWE-bench 子集结果")

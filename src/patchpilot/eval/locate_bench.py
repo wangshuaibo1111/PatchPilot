@@ -250,6 +250,126 @@ def cases_from_history(
     return cases
 
 
+def _materialize_commit(git_root: Path, commit: str, destination: Path) -> Path | None:
+    """把某个 commit 的整棵树解到 `destination`（**用 git archive，不碰工作区**）。
+
+    这样基准读到的是"当时那份代码"，不受后续提交影响——这正是复审指出的漂移根因。
+    """
+    import zipfile
+
+    destination.mkdir(parents=True, exist_ok=True)
+    archive = destination.parent / f"{destination.name}.zip"
+    proc = subprocess.run(
+        ["git", "archive", "--format=zip", f"--output={archive}", commit],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0 or not archive.is_file():
+        return None
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(destination)
+    finally:
+        archive.unlink(missing_ok=True)
+    return destination
+
+
+def freeze_history_cases(
+    *, git_root: Path, scope: Path, limit: int = 40, min_message: int = 12
+) -> dict[str, object]:
+    """把当前的提交历史题集固化成可入库的 JSON（含 query 与 expected_files）。"""
+    payload_cases: list[dict[str, object]] = []
+    proc = subprocess.run(
+        ["git", "log", f"-n{limit}", "--pretty=format:%H%x00%s%x00%b%x02"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0:
+        return {"scope": scope.name, "cases": []}
+    for chunk in proc.stdout.split("\x02"):
+        chunk = chunk.strip("\n")
+        if not chunk:
+            continue
+        parts = chunk.split("\x00")
+        if len(parts) < 2:
+            continue
+        sha, subject = parts[0], parts[1]
+        body = parts[2] if len(parts) > 2 else ""
+        message = f"{subject}\n\n{body}".strip() if body.strip() else subject.strip()
+        if len(message) < min_message:
+            continue
+        changed: set[str] = set()
+        for raw in _changed_source_files(git_root, sha):
+            normalized = _normalize(raw, git_root, scope)
+            if normalized:
+                changed.add(normalized)
+        if not changed:
+            continue
+        payload_cases.append(
+            {
+                "id": sha[:8],
+                "commit": sha,
+                "query": message,
+                "expected_files": sorted(changed),
+            }
+        )
+    return {
+        "scope": scope.relative_to(git_root).as_posix()
+        if scope.is_relative_to(git_root)
+        else scope.as_posix(),
+        "note": (
+            "**冻结题集**：由 `git log` 一次性生成（含 query 与 expected_files），"
+            "出题时用 `git archive <commit>` 取出该题**当时**的代码树，"
+            "不再读活工作区——否则每提交一次，题集与基线都会漂。"
+            "题源仍带自我指涉（本仓库的提交历史即题目），故只用于组内对比与消融，"
+            "不可与外部基准混谈。"
+        ),
+        "cases": payload_cases,
+    }
+
+
+def cases_from_frozen(path: Path, *, git_root: Path) -> list[LocateCase]:
+    """从**冻结**的题集文件建题：每题按其 commit 取出当时的代码树再建索引。"""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    scope_rel = str(payload.get("scope") or "src/patchpilot")
+    cases: list[LocateCase] = []
+    for item in payload.get("cases", []):
+        commit = str(item.get("commit") or "")
+        expected = {str(x) for x in (item.get("expected_files") or [])}
+        query = str(item.get("query") or "")
+        if not commit or not expected or not query:
+            continue
+        temp_root = Path(tempfile.mkdtemp(prefix=f"pp-frozen-{item['id']}-"))
+        tree = _materialize_commit(git_root, commit, temp_root)
+        if tree is None:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            continue
+        scope_dir = tree / scope_rel
+        if not scope_dir.is_dir():
+            # 该 commit 还没有这个目录（早期提交），跳过并清理
+            shutil.rmtree(temp_root, ignore_errors=True)
+            continue
+        cases.append(
+            LocateCase(
+                id=str(item["id"]),
+                query=query,
+                index=index_repo(scope_dir),
+                expected_files=frozenset(expected),
+                group="history",
+                root=scope_dir,
+            )
+        )
+    return cases
+
+
 # ---------------------------------------------------------------- 两个"配置"（基线 + P2）
 
 ABLATIONS: tuple[tuple[str, LocalizerConfig | None], ...] = (
@@ -365,10 +485,15 @@ def run_locate_bench(
     scope: Path,
     corpus_path: Path | None = None,
     synthetic_path: Path | None = None,
+    frozen_path: Path | None = None,
     history_limit: int = 40,
     limit: int = 10,
 ) -> BenchOutcome:
-    """跑全部消融配置 × 三个题目组（corpus / synthetic / history）。"""
+    """跑全部消融配置 × 三个题目组（corpus / synthetic / history）。
+
+    `history` 优先用**冻结题集**（`frozen_path`，按固定 commit 出题、可复现）；
+    没给冻结文件时才退回"读活工作区 + git log"的老路（仅用于临时摸底）。
+    """
     cases: list[LocateCase] = []
     temp_dirs: list[Path] = []
     if corpus_path is not None and corpus_path.is_file():
@@ -379,7 +504,12 @@ def run_locate_bench(
         synthetic_cases = cases_from_locate_corpus(synthetic_path)
         cases.extend(synthetic_cases)
         temp_dirs.extend(c.root for c in synthetic_cases)
-    cases.extend(cases_from_history(git_root=git_root, scope=scope, limit=history_limit))
+    if frozen_path is not None and frozen_path.is_file():
+        frozen_cases = cases_from_frozen(frozen_path, git_root=git_root)
+        cases.extend(frozen_cases)
+        temp_dirs.extend(c.root.parent for c in frozen_cases)
+    else:
+        cases.extend(cases_from_history(git_root=git_root, scope=scope, limit=history_limit))
 
     scores: list[LocateScore] = []
     try:
@@ -415,6 +545,8 @@ __all__ = [
     "baseline_rank",
     "cases_from_corpus",
     "cases_from_locate_corpus",
+    "cases_from_frozen",
     "cases_from_history",
+    "freeze_history_cases",
     "run_locate_bench",
 ]

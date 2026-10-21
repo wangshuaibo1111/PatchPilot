@@ -13,14 +13,13 @@
       "sympy__sympy-13146",
       "sympy__sympy-13177"
     ],
-    "images": [
-      ""
-    ],
+    "images": [],
+    "grading": "pytest -rA 状态表逐条比对 F2P；SKIPPED 计失败；无结果判 invalid",
     "note": "N 很小，只能当链路验证；并非论文级 pass@1。受限原因见 eval/swebench_subset.json 的 notes 与 PLAN。"
   },
   "metrics": {
     "total": 11,
-    "valid": 11,
+    "valid": 10,
     "passed": 0,
     "pass@1": 0.0
   },
@@ -30,77 +29,128 @@
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.01112
+      "cost_usd": 0.009108,
+      "targets": {
+        "test_ccode_Relational": "sympy/printing/tests/test_ccode.py::test_ccode_Relational",
+        "test_ccode_sinc": "sympy/printing/tests/test_ccode.py::test_ccode_sinc"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-11870",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.021954
+      "cost_usd": 0.016635,
+      "targets": {
+        "test_sinc": "sympy/functions/elementary/tests/test_trigonometric.py::test_sinc | sympy/printing/tests/test_octave.py::test_sinc"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-11897",
       "status": "failed",
-      "detail": "模型没有产出补丁",
+      "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.039529
+      "cost_usd": 0.027928,
+      "targets": {
+        "test_latex_Piecewise": "sympy/printing/tests/test_latex.py::test_latex_Piecewise"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-12171",
       "status": "failed",
-      "detail": "FAIL_TO_PASS 仍有失败",
+      "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.003574
+      "cost_usd": 0.002591,
+      "targets": {
+        "test_Derivative": "sympy/printing/tests/test_mathematica.py::test_Derivative | sympy/printing/tests/test_precedence.py::test_Derivative | sympy/printing/tests/test_str.py::test_Derivative | sympy/printing/tests/test_theanocode.py::test_Derivative"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-12419",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.014579
+      "cost_usd": 0.007553,
+      "targets": {
+        "test_Identity": "sympy/matrices/expressions/tests/test_matexpr.py::test_Identity"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-12454",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.002846
+      "cost_usd": 0.002973,
+      "targets": {
+        "test_is_upper": "sympy/matrices/tests/test_commonmatrix.py::test_is_upper | sympy/matrices/tests/test_matrices.py::test_is_upper",
+        "test_hessenberg": "sympy/matrices/tests/test_matrices.py::test_hessenberg"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-12481",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.017128
+      "cost_usd": 0.019345,
+      "targets": {
+        "test_args": "sympy/combinatorics/tests/test_permutations.py::test_args | sympy/core/tests/test_expr.py::test_args | sympy/matrices/tests/test_matrices.py::test_args"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-13031",
       "status": "failed",
       "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.011863
+      "cost_usd": 0.013151,
+      "targets": {
+        "test_sparse_matrix": "sympy/matrices/tests/test_sparse.py::test_sparse_matrix"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-13043",
       "status": "failed",
-      "detail": "FAIL_TO_PASS 仍有失败",
+      "detail": "候选补丁无法应用",
       "rounds": 1,
-      "cost_usd": 0.019817
+      "cost_usd": 0.009876,
+      "targets": {
+        "test_decompose": "sympy/integrals/tests/test_intpoly.py::test_decompose"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-13146",
-      "status": "failed",
-      "detail": "FAIL_TO_PASS 仍有失败",
-      "rounds": 1,
-      "cost_usd": 0.021619
+      "status": "invalid",
+      "detail": "FAIL_TO_PASS 在仓库里找不到任何测试文件",
+      "rounds": 0,
+      "cost_usd": 0.0,
+      "targets": {
+        "test_evalf_bugs": "<无>"
+      },
+      "observed": {}
     },
     {
       "instance_id": "sympy__sympy-13177",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "1 个用例未通过: test_mod",
       "rounds": 1,
-      "cost_usd": 0.004952
+      "cost_usd": 0.004463,
+      "targets": {
+        "test_mod": "sympy/core/tests/test_numbers.py::test_mod | sympy/printing/tests/test_numpy.py::test_mod",
+        "test_mod_inverse": "sympy/core/tests/test_numbers.py::test_mod_inverse"
+      },
+      "observed": {
+        "sympy/core/tests/test_numbers.py::test_mod": "FAILED",
+        "sympy/printing/tests/test_numpy.py::test_mod": "FAILED",
+        "sympy/core/tests/test_numbers.py::test_mod_inverse": "PASSED"
+      }
     }
   ]
 }

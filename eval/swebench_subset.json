@@ -2,7 +2,7 @@
   "dataset": "SWE-bench_Lite (princeton-nlp/SWE-bench_Lite, test split)",
   "runner": "host-conda-py39",
   "container_pythonpath": "",
-  "notes": "只收**标定通过**的题（gold patch 能让 FAIL_TO_PASS 从失败翻成通过）。运行方式：宿主 conda python 3.9 解释器（镜像仓库 403 / Docker Hub 超时，拿不到 python:3.9 基础镜像；conda/pypi 可达）。**安全取舍**：宿主运行无容器隔离，只靠一次性克隆 + 超时 + 专用解释器；被评测补丁由本项目模型产出、打在一次性克隆上，故仅用于评测，生产修复路径仍走容器沙箱。分数仍受“只能钉一套通用依赖”限制，N 有限，请配合报告里的说明阅读。 **实测结果（11 题）**：pass@1 = 0/11；失败分类：补丁无法应用 7 题、测试仍失败 3 题、未产出补丁 1 题。瓶颈不是 harness 而是**补丁格式**：prompt 只给 2.5KB 文件片段，模型无法复现精确的上下文行，于是 unified diff 对不上。下一步应给「带行号的精确片段」或改用 search/replace 编辑格式，并在应用端做 fuzz（如 `git apply -C1`）。 **定性**：N=11 仍属**链路验证**，不是**论文级** pass@1。",
+  "notes": "只收**标定通过**的题（gold patch 能让 FAIL_TO_PASS 从失败翻成通过）。运行方式：宿主 conda python 3.9 解释器（镜像仓库 403 / Docker Hub 超时，拿不到 python:3.9 基础镜像；conda/pypi 可达）。**安全取舍**：宿主运行无容器隔离，只靠一次性克隆 + 超时 + 专用解释器；被评测补丁由本项目模型产出、打在一次性克隆上，故仅用于评测，生产修复路径仍走容器沙箱。**判分口径**：照官方 `swebench/harness/grading.py`，解析 `pytest -rA` 状态表逐条比对 FAIL_TO_PASS；`SKIPPED` 计失败，一条结果都解析不到判 invalid（不算模型失败）。**定性**：N 有限，属**链路验证**，不是**论文级** pass@1。",
   "rejected": [
     {
       "instance_id": "sympy__sympy-12236",
@@ -704,13 +704,13 @@
   "python_env_hint": "export PP_SWEBENCH_PYTHON=<python3.9 可执行文件路径>（该解释器需装 pytest==7.4.4 pytest-timeout==2.3.1 mpmath）",
   "result": {
     "total": 11,
-    "valid": 11,
+    "valid": 10,
     "passed": 0,
     "pass@1": 0.0
   },
   "failure_taxonomy": {
-    "补丁无法应用": 7,
-    "未产出补丁": 1,
-    "测试仍失败": 3
+    "补丁无法应用": 9,
+    "无效（找不到测试文件）": 1,
+    "用例未通过": 1
   }
 }

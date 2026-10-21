@@ -113,6 +113,13 @@ class OpenAICompatibleLLM:
         except ImportError as exc:  # pragma: no cover - 取决于可选依赖
             raise RuntimeError('缺少 openai 依赖，请执行 pip install "patchpilot[llm]"') from exc
 
+        # 代理客户端常把 `NO_PROXY` 写成 `…,::1,[::1]`，而 httpx 会把 `[::1]` 当 URL、
+        # 把 `:1]` 当端口 → 客户端**构造时就抛 InvalidURL**（真机事故，见 docs/PLAN）。
+        # 这类环境不是我们的错，但应用不该起不来，故在创建客户端前清理一次。
+        from patchpilot.core.netenv import sanitize_no_proxy
+
+        sanitize_no_proxy()
+
         self.model = model
         self._price_overrides = price_overrides
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)
