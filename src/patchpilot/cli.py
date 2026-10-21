@@ -717,6 +717,11 @@ def locate(
     history: int = typer.Option(60, "--history", help="从提交历史取多少条提交流程作题"),
     git_root: Path = typer.Option(Path("."), "--git-root", help="git 仓库根"),
     out: Path | None = typer.Option(None, "--out", help="把消融表写成 JSON"),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="重算并与 --out 里已落盘的结果比对；不一致则以退出码 1 结束（CI 用）",
+    ),
 ) -> None:
     """**P2 验收**：定位基准 + 消融表（Top-1 / Top-5 / MRR）。
 
@@ -726,7 +731,7 @@ def locate(
     """
     import json
 
-    from patchpilot.eval.locate_bench import run_locate_bench
+    from patchpilot.eval.locate_bench import compare_locate_rows, run_locate_bench
 
     resolved_root = git_root.resolve()
     resolved_scope = (resolved_root / scope).resolve()
@@ -790,7 +795,22 @@ def locate(
             }
             for score in outcome.scores
         ]
-        write_text_lf(out, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        fresh = json.loads(json.dumps(payload))
+        if verify and out.is_file():
+            # **陈旧检测**：重算结果必须与落盘一致，否则 CI 变红。
+            # 没有这一步，"基准数字过期"不会有任何东西来拦（复审 [F]）。
+            committed = json.loads(out.read_text(encoding="utf-8-sig"))
+            drift = compare_locate_rows(committed, fresh)
+            if drift:
+                console.print(
+                    "[red]定位基准已过期[/red]——请重跑 `pp locate --out "
+                    f"{out}` 并提交新的结果："
+                )
+                for line in drift:
+                    console.print(f"  [yellow]{line}[/yellow]")
+                raise typer.Exit(code=1)
+            console.print(f"[green]定位基准与 {out} 一致（{len(fresh)} 行）[/green]")
+        write_text_lf(out, json.dumps(fresh, ensure_ascii=False, indent=2) + "\n")
         console.print(f"消融表已写入 [bold]{out}[/bold]")
 
 
@@ -835,12 +855,14 @@ def swebench(
 
     def propose(instance, attempt: int):  # noqa: ANN001, ANN202
         from patchpilot.core.pricing import estimate_cost_usd
-        from patchpilot.graph.repair import extract_patch
 
         repo_dir = prepare_repo(instance, root)
         prompt, _located = build_repair_prompt(instance, repo_dir)
         response = complete_sync(llm, [ChatMessage(role="user", content=prompt)])
-        patch = extract_patch(response.text)
+        # **返回模型原文**，不要在这里抽 unified diff：prompt 要的是 search/replace 块，
+        # 用 `extract_patch` 抽会把块抽成空串（本轮就这么把 10 题全变成"没有产出改动"）。
+        # 格式识别与降级应用统一交给 `tools.edits.apply_model_output`。
+        output = response.text
         cost = (
             estimate_cost_usd(
                 response.model,
@@ -850,7 +872,7 @@ def swebench(
             )
             or 0.0
         )
-        return patch, cost
+        return output, cost
 
     with console.status("跑 SWE-bench 子集…"):
         report = evaluate(

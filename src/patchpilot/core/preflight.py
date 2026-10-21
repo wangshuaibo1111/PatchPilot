@@ -249,7 +249,7 @@ def _run(
     cwd: Path,
     timeout_s: float,
     *,
-    stdin: str | None = None,
+    stdin: str | bytes | None = None,
     extra_env: Mapping[str, str] | None = None,
 ) -> tuple[int, str]:
     # 注意：**不要**在这里把 `GIT_CEILING_DIRECTORIES` 无条件透传给所有子进程。

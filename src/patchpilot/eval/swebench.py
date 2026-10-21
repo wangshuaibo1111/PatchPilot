@@ -651,8 +651,19 @@ def build_repair_prompt(
     prompt = "\n".join(
         [
             "你是代码修复助手。下面是仓库里真实 issue 的描述。",
-            "请只输出一个 unified diff 补丁（`git apply -` 可直接应用），不要任何解释。",
-            "补丁的路径是仓库相对路径。",
+            "",
+            "**请用 search/replace 块输出改动**（比 unified diff 更容易正确应用）。格式：",
+            "",
+            "<仓库相对路径>",
+            "<<<<<<< SEARCH",
+            "<要被替换掉的原样内容，必须逐字照抄候选文件里的原文>",
+            "=======",
+            "<替换成的新内容>",
+            ">>>>>>> REPLACE",
+            "",
+            "要点：SEARCH 只包含**需要改的那几行**，不要带行号；可以有多个块；",
+            "每块前面单独一行写文件路径。也可以给 unified diff 作为备选，但优先用上面的块格式。",
+            "除这些块之外不要输出多余解释。",
             "",
             "## Issue",
             instance.problem.strip(),
@@ -704,13 +715,18 @@ def evaluate(
         observed: tuple[tuple[str, str], ...] = ()
         for attempt in range(max_rounds):
             rounds = attempt + 1
-            patch, spent = propose_patch(instance, attempt)
+            raw, spent = propose_patch(instance, attempt)
             cost += spent
-            if not patch.strip():
-                detail = "模型没有产出补丁"
+            if not raw.strip():
+                detail = "模型没有产出改动"
                 continue
-            if not apply_patch_text(repo_dir, patch):
-                detail = "候选补丁无法应用"
+            # **先 diff 后 search/replace 块**：真机 9/11 卡在"补丁无法应用"，
+            # 而 Aider 的经验是块格式比裸 unified diff 稳得多（见 tools/edits.py）。
+            from patchpilot.tools.edits import apply_model_output
+
+            result = apply_model_output(repo_dir, raw)
+            if not result.applied:
+                detail = f"改动无法应用（{result.detail}）"
                 reset_repo(repo_dir, instance, keep_test_patch=True)
                 continue
             _rc, log = run_tests(instance, repo_dir, node_ids)
@@ -718,13 +734,13 @@ def evaluate(
             observed = grade.observed
             if not grade.valid:
                 status = "invalid"
-                detail = grade.reason
+                detail = f"[{result.method}] {grade.reason}"
                 break
             if grade.resolved:
                 status = "passed"
-                detail = f"{grade.reason}（第 {rounds} 轮）"
+                detail = f"[{result.method}] {grade.reason}（第 {rounds} 轮）"
                 break
-            detail = grade.reason
+            detail = f"[{result.method}] {grade.reason}"
             reset_repo(repo_dir, instance, keep_test_patch=True)
         reset_repo(repo_dir, instance, keep_test_patch=False)
         outcomes.append(

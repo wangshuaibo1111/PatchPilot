@@ -273,7 +273,8 @@ class Localizer:
             ),
         )
         results: list[LocalizedChunk] = []
-        for cid, score in ordered[: max(1, limit)]:
+        # 与 `vectors.search` 同口径：`limit=0` 应当返回空，而不是「至少一条」。
+        for cid, score in ordered[: max(0, int(limit))]:
             chunk = self._by_id.get(cid)
             if chunk is None:
                 continue

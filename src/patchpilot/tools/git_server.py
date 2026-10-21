@@ -178,7 +178,7 @@ def _run_git(root: Path, argv: list[str], *, timeout_s: float = 60.0) -> str:
         raise GitError(
             f"git {argv[0]} 失败（rc={proc.returncode}）: {(proc.stderr or '').strip()[:300]}"
         )
-    if proc.stdout is None:  # pragma: no cover - 见下
+    if proc.stdout is None:  # 冗余纵深防御，见下（本仓库没有 coverage 配置，故不用 pragma）
         # 与 `_files_git_would_write` 同口径：输出不可用 = 无法信任 = 拒绝。
         #
         # **§8.5 登记（第三十一轮复审指出）**：本分支在**当前实现下不可达**——

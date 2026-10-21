@@ -95,7 +95,7 @@ class BenchOutcome:
 # ---------------------------------------------------------------- 题目构建
 
 
-def cases_from_corpus(corpus_path: Path, *, keep_dirs: bool = False) -> list[LocateCase]:
+def cases_from_corpus(corpus_path: Path) -> list[LocateCase]:
     """把语料题物化成临时仓库并建索引（期望文件 = 非测试的源码文件）。"""
     payload = json.loads(corpus_path.read_text(encoding="utf-8"))
     cases: list[LocateCase] = []
@@ -133,9 +133,6 @@ def cases_from_corpus(corpus_path: Path, *, keep_dirs: bool = False) -> list[Loc
                 root=root,
             )
         )
-        if not keep_dirs:
-            # 索引已建好；目录留给基线调用（用完在 run 结束时清理）
-            continue
     return cases
 
 
@@ -479,6 +476,35 @@ def _score(
     )
 
 
+def compare_locate_rows(
+    committed: list[dict[str, object]], fresh: list[dict[str, object]]
+) -> list[str]:
+    """比对"落盘的基准"与"刚算出来的基准"，返回可读差异（空列表表示一致）。
+
+    这是防"基准数字悄悄过期"的闸门：CI 里 `pp locate --verify` 用它。
+    复审曾指出落盘数字一度没有任何已提交状态能复现——那就需要一道会变红的闸。
+    """
+
+    def key(rows: list[dict[str, object]]) -> dict[tuple[str, str], tuple]:
+        table: dict[tuple[str, str], tuple] = {}
+        for row in rows:
+            name = (str(row.get("config", "")), str(row.get("group", "")))
+            table[name] = (
+                int(row.get("total", 0) or 0),
+                round(float(row.get("top1", 0.0) or 0.0), 4),
+                round(float(row.get("top5", 0.0) or 0.0), 4),
+                round(float(row.get("mrr", 0.0) or 0.0), 4),
+            )
+        return table
+
+    old, new = key(committed), key(fresh)
+    diffs: list[str] = []
+    for name in sorted(set(old) | set(new)):
+        if old.get(name) != new.get(name):
+            diffs.append(f"{name[0]} / {name[1]}: 落盘 {old.get(name)} → 现在 {new.get(name)}")
+    return diffs
+
+
 def run_locate_bench(
     *,
     git_root: Path,
@@ -544,6 +570,7 @@ __all__ = [
     "LocateScore",
     "baseline_rank",
     "cases_from_corpus",
+    "compare_locate_rows",
     "cases_from_locate_corpus",
     "cases_from_frozen",
     "cases_from_history",

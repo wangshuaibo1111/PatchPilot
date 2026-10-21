@@ -115,7 +115,8 @@ class VectorIndex:
                 doc_freq[bucket] = doc_freq.get(bucket, 0) + 1
 
         total = len(raw) or 1
-        # 平滑 IDF，与 BM25 的 idf 同族，避免除零
+        # 平滑 IDF = log(1 + N/(df+1))。**与 BM25 的公式不同**（BM25 通常不额外 +1），
+        # 只是同属「词频倒数」这一族；查询侧不加 idf，属常见简化。
         idf = {b: math.log(1.0 + total / (f + 1.0)) for b, f in doc_freq.items()}
         self._vectors: list[dict[int, float]] = []
         for counts in raw:
@@ -146,9 +147,11 @@ class VectorIndex:
                 self._chunks[pair[1]].start_line,
             )
         )
+        # `limit=0` 必须是 0 条。原先写成 `max(1, ...)`，于是「没要求结果」会变成
+        # 「至少返回一条」，调用方无法用 0 表达「不要」。
         return [
             ScoredVectorChunk(chunk=self._chunks[i], score=round(s, 6))
-            for s, i in scored[: max(1, min(limit, len(self._vectors)))]
+            for s, i in scored[: max(0, min(int(limit), len(self._vectors)))]
         ]
 
 

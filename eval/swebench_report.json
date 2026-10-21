@@ -20,16 +20,16 @@
   "metrics": {
     "total": 11,
     "valid": 10,
-    "passed": 0,
-    "pass@1": 0.0
+    "passed": 1,
+    "pass@1": 0.1
   },
   "outcomes": [
     {
       "instance_id": "sympy__sympy-11400",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "改动无法应用（search/replace 成功 0/1；sympy/printing/c.py: 文件不存在）",
       "rounds": 1,
-      "cost_usd": 0.009108,
+      "cost_usd": 0.013368,
       "targets": {
         "test_ccode_Relational": "sympy/printing/tests/test_ccode.py::test_ccode_Relational",
         "test_ccode_sinc": "sympy/printing/tests/test_ccode.py::test_ccode_sinc"
@@ -39,65 +39,81 @@
     {
       "instance_id": "sympy__sympy-11870",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "[search-replace] 1 个用例未通过: test_sinc",
       "rounds": 1,
-      "cost_usd": 0.016635,
+      "cost_usd": 0.013222,
       "targets": {
         "test_sinc": "sympy/functions/elementary/tests/test_trigonometric.py::test_sinc | sympy/printing/tests/test_octave.py::test_sinc"
       },
-      "observed": {}
+      "observed": {
+        "sympy/functions/elementary/tests/test_trigonometric.py::test_sinc": "FAILED",
+        "sympy/printing/tests/test_octave.py::test_sinc": "PASSED"
+      }
     },
     {
       "instance_id": "sympy__sympy-11897",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "[search-replace] 1 个用例未通过: test_latex_Piecewise",
       "rounds": 1,
-      "cost_usd": 0.027928,
+      "cost_usd": 0.026207,
       "targets": {
         "test_latex_Piecewise": "sympy/printing/tests/test_latex.py::test_latex_Piecewise"
       },
-      "observed": {}
+      "observed": {
+        "sympy/printing/tests/test_latex.py::test_latex_Piecewise": "FAILED"
+      }
     },
     {
       "instance_id": "sympy__sympy-12171",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "[search-replace] 1 个用例未通过: test_Derivative",
       "rounds": 1,
-      "cost_usd": 0.002591,
+      "cost_usd": 0.00345,
       "targets": {
         "test_Derivative": "sympy/printing/tests/test_mathematica.py::test_Derivative | sympy/printing/tests/test_precedence.py::test_Derivative | sympy/printing/tests/test_str.py::test_Derivative | sympy/printing/tests/test_theanocode.py::test_Derivative"
       },
-      "observed": {}
+      "observed": {
+        "sympy/printing/tests/test_mathematica.py::test_Derivative": "FAILED",
+        "sympy/printing/tests/test_precedence.py::test_Derivative": "PASSED",
+        "sympy/printing/tests/test_str.py::test_Derivative": "PASSED",
+        "sympy/printing/tests/test_theanocode.py::test_Derivative": "MISSING"
+      }
     },
     {
       "instance_id": "sympy__sympy-12419",
-      "status": "failed",
-      "detail": "候选补丁无法应用",
+      "status": "passed",
+      "detail": "[search-replace] 1 个用例全部通过（第 1 轮）",
       "rounds": 1,
-      "cost_usd": 0.007553,
+      "cost_usd": 0.003469,
       "targets": {
         "test_Identity": "sympy/matrices/expressions/tests/test_matexpr.py::test_Identity"
       },
-      "observed": {}
+      "observed": {
+        "sympy/matrices/expressions/tests/test_matexpr.py::test_Identity": "PASSED"
+      }
     },
     {
       "instance_id": "sympy__sympy-12454",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "[search-replace] 1 个用例未通过: test_hessenberg",
       "rounds": 1,
-      "cost_usd": 0.002973,
+      "cost_usd": 0.001691,
       "targets": {
         "test_is_upper": "sympy/matrices/tests/test_commonmatrix.py::test_is_upper | sympy/matrices/tests/test_matrices.py::test_is_upper",
         "test_hessenberg": "sympy/matrices/tests/test_matrices.py::test_hessenberg"
       },
-      "observed": {}
+      "observed": {
+        "sympy/matrices/tests/test_commonmatrix.py::test_is_upper": "PASSED",
+        "sympy/matrices/tests/test_matrices.py::test_is_upper": "PASSED",
+        "sympy/matrices/tests/test_matrices.py::test_hessenberg": "FAILED"
+      }
     },
     {
       "instance_id": "sympy__sympy-12481",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "改动无法应用（search/replace 成功 0/1；sympy/combinatorics/permutations.py: 搜索块未匹配（前两行 ['        temp = flatten(cycles)', '        if has_dups(temp):']））",
       "rounds": 1,
-      "cost_usd": 0.019345,
+      "cost_usd": 0.009421,
       "targets": {
         "test_args": "sympy/combinatorics/tests/test_permutations.py::test_args | sympy/core/tests/test_expr.py::test_args | sympy/matrices/tests/test_matrices.py::test_args"
       },
@@ -106,9 +122,9 @@
     {
       "instance_id": "sympy__sympy-13031",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "改动无法应用（search/replace 成功 0/2；sympy/matrices/common.py: 搜索块未匹配（前两行 ['        if self.rows == 0:', '            return other']）；sympy/matrices/common.py: 搜索块未匹配（前两行 ['        if self.cols == 0:', '            return other']））",
       "rounds": 1,
-      "cost_usd": 0.013151,
+      "cost_usd": 0.016256,
       "targets": {
         "test_sparse_matrix": "sympy/matrices/tests/test_sparse.py::test_sparse_matrix"
       },
@@ -117,9 +133,9 @@
     {
       "instance_id": "sympy__sympy-13043",
       "status": "failed",
-      "detail": "候选补丁无法应用",
+      "detail": "改动无法应用（search/replace 成功 1/2；sympy/integrals/intpoly.py: 搜索块未匹配（前两行 ['        if separate:', '            return list(poly_dict.values())']））",
       "rounds": 1,
-      "cost_usd": 0.009876,
+      "cost_usd": 0.014115,
       "targets": {
         "test_decompose": "sympy/integrals/tests/test_intpoly.py::test_decompose"
       },
@@ -139,9 +155,9 @@
     {
       "instance_id": "sympy__sympy-13177",
       "status": "failed",
-      "detail": "1 个用例未通过: test_mod",
+      "detail": "[search-replace] 1 个用例未通过: test_mod",
       "rounds": 1,
-      "cost_usd": 0.004463,
+      "cost_usd": 0.001835,
       "targets": {
         "test_mod": "sympy/core/tests/test_numbers.py::test_mod | sympy/printing/tests/test_numpy.py::test_mod",
         "test_mod_inverse": "sympy/core/tests/test_numbers.py::test_mod_inverse"

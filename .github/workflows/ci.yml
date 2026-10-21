@@ -4,7 +4,10 @@ name: CI
 #
 #   1. `gate`（**必然执行、无需任何密钥**）：`pp check` 十项确定性检查 + 全部单测。
 #      这一步不需要 Docker、不需要网络、不需要 API Key，所以任何 PR 都必须过。
-#   2. `eval-regression`（**需要密钥**）：真模型 + 真 Docker 跑 `pp eval --baseline`，
+#   2. `locate-recompute`（**无需密钥**）：用冻结题集重跑 `pp locate`，与提交在库里的
+#      `eval/locate.json` 比对。**没有它，基准数字会悄悄过期**（复审 [F] 指出过：
+#      落盘数字一度无任何已提交状态能复现）。同时跑 cp936 编码矩阵。
+#   3. `eval-regression`（**需要密钥**）：真模型 + 真 Docker 跑 `pp eval --baseline`，
 #      与提交在库里的 `eval/baseline.json` 比，pass@1 退化即失败。
 #      没配 secret 时整步跳过，而不是静默通过——故意改坏的 prompt 会在这一步变红。
 #
@@ -47,6 +50,40 @@ jobs:
         with:
           name: pp-check
           path: /tmp/check.json
+
+  locate-recompute:
+    name: 定位基准复算（冻结题集 + cp936 矩阵）
+    runs-on: ubuntu-latest
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `git archive` 要能取到冻结题集里那些 commit —— 必须完整历史
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 重算定位基准并比对落盘结果（过期即失败）
+        run: python -m patchpilot.cli locate --verify --out eval/locate.json
+
+      - name: 冻结题集自检（题数/commit/期望集）
+        run: pytest -q tests/test_locate_frozen.py
+
+      - name: cp936 编码矩阵（Windows 之外的默认编码路径）
+        env:
+          # 强制走非 UTF-8 默认编码，复现 cp936 类问题
+          PYTHONUTF8: "0"
+          PYTHONCOERCECLOCALE: "0"
+          LC_ALL: C
+          LANG: C
+        run: pytest -q --no-header -p no:cacheprovider
 
   eval-regression:
     name: 评测回归门禁（真模型 + 沙箱，需密钥）

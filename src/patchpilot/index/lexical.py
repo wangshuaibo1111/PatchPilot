@@ -159,7 +159,9 @@ class BM25Index:
         terms = tokenize(query)
         if not terms or not self._docs:
             return []
-        limit = max(1, min(limit, len(self._docs)))
+        limit = max(0, min(int(limit), len(self._docs)))
+        if limit == 0:
+            return []
         scores: list[tuple[float, int]] = []
         for index, counts in enumerate(self._docs):
             score = 0.0
