@@ -2,7 +2,7 @@
   "dataset": "SWE-bench_Lite (princeton-nlp/SWE-bench_Lite, test split)",
   "runner": "host-conda-py39",
   "container_pythonpath": "",
-  "notes": "只收**标定通过**的题（gold patch 能让 FAIL_TO_PASS 从失败翻成通过）。运行方式：宿主 conda python 3.9 解释器（镜像仓库 403 / Docker Hub 超时，拿不到 python:3.9 基础镜像；conda/pypi 可达）。**安全取舍**：宿主运行无容器隔离，只靠一次性克隆 + 超时 + 专用解释器；被评测补丁由本项目模型产出、打在一次性克隆上，故仅用于评测，生产修复路径仍走容器沙箱。**判分口径**：照官方 `swebench/harness/grading.py`，解析 `pytest -rA` 状态表逐条比对 FAIL_TO_PASS；`SKIPPED` 计失败，一条结果都解析不到判 invalid（不算模型失败）。**定性**：N 有限，属**链路验证**，不是**论文级** pass@1。 **第三十三轮**：改用 search/replace 编辑块后，`pass@1` 从 0/10 → **1/10**，「改动无法应用」从 9 降到 4（且每条都带具体原因），其余 5 题变成真实的「用例未通过」——这才是有意义的信号。",
+  "notes": "只收**标定通过**的题（gold patch 能让 FAIL_TO_PASS 从失败翻成通过）。运行方式：宿主 conda python 3.9 解释器（镜像仓库 403 / Docker Hub 超时，拿不到 python:3.9 基础镜像；conda/pypi 可达）。**安全取舍**：宿主运行无容器隔离，只靠一次性克隆 + 超时 + 专用解释器；被评测补丁由本项目模型产出、打在一次性克隆上，故仅用于评测，生产修复路径仍走容器沙箱。**判分口径**：照官方 `swebench/harness/grading.py`，解析 `pytest -rA` 状态表逐条比对 FAIL_TO_PASS；`SKIPPED` 计失败，一条结果都解析不到判 invalid（不算模型失败）。**定性**：N 有限，属**链路验证**，不是**论文级** pass@1。 **第三十三轮**：改用 search/replace 编辑块后，`pass@1` 从 0/10 → **1/10**，「改动无法应用」从 9 降到 4（且每条都带具体原因），其余 5 题变成真实的「用例未通过」——这才是有意义的信号。 **第三十三轮最终态**：应用模块按「不损坏文件」重写（整行匹配 + 唯一性 + 保留行尾 + UTF-8 严格 + 原子落盘 + 语法自检）后，`pass@1 = 0/10`（全部题口径 0/11）。此前报告过的 `1/10` 是**会静默改错位置的旧模块**给出的，已作废。失败分类：改动无法应用 4、用例未通过 5、无效 1。",
   "rejected": [
     {
       "instance_id": "sympy__sympy-12236",
@@ -705,13 +705,13 @@
   "result": {
     "total": 11,
     "valid": 10,
-    "passed": 1,
-    "pass@1": 0.1
+    "passed": 0,
+    "pass@1": 0.0,
+    "pass@1_all": 0.0
   },
   "failure_taxonomy": {
-    "改动无法应用": 4,
-    "用例未通过": 5,
-    "通过": 1,
-    "无效（找不到测试文件）": 1
+    "改动无法应用": 6,
+    "用例未通过": 4,
+    "无效（题目判不了，不计分母）": 1
   }
 }

@@ -139,7 +139,9 @@ def test_shipped_frozen_cases_are_well_formed() -> None:
 
     payload = json.loads(frozen.read_text(encoding="utf-8"))
     cases = payload["cases"]
-    assert len(cases) >= 10, f"题数太少（{len(cases)}）"
+    # **钉精确值**：题数缩水（例如某 commit 被 squash 掉）必须变红，
+    # 否则"用更小的题集重新落盘"就会悄悄通过。
+    assert len(cases) == 16, f"冻结题数应为 16，实际 {len(cases)}"
     assert (repo_root / payload["scope"]).is_dir(), "scope 必须是真实存在的目录"
     assert "冻结" in str(payload.get("note") or ""), "要在文件里写明这是冻结题集"
 

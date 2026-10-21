@@ -6,7 +6,8 @@ name: CI
 #      这一步不需要 Docker、不需要网络、不需要 API Key，所以任何 PR 都必须过。
 #   2. `locate-recompute`（**无需密钥**）：用冻结题集重跑 `pp locate`，与提交在库里的
 #      `eval/locate.json` 比对。**没有它，基准数字会悄悄过期**（复审 [F] 指出过：
-#      落盘数字一度无任何已提交状态能复现）。同时跑 cp936 编码矩阵。
+#      落盘数字一度无任何已提交状态能复现）。同时跑**非 UTF-8 locale** 矩阵
+#      （ubuntu 上是 ASCII，不是 cp936——见该步骤里的范围说明）。
 #   3. `eval-regression`（**需要密钥**）：真模型 + 真 Docker 跑 `pp eval --baseline`，
 #      与提交在库里的 `eval/baseline.json` 比，pass@1 退化即失败。
 #      没配 secret 时整步跳过，而不是静默通过——故意改坏的 prompt 会在这一步变红。
@@ -52,7 +53,7 @@ jobs:
           path: /tmp/check.json
 
   locate-recompute:
-    name: 定位基准复算（冻结题集 + cp936 矩阵）
+    name: 定位基准复算（冻结题集 + 非 UTF-8 locale 矩阵）
     runs-on: ubuntu-latest
     needs: gate
     steps:
@@ -76,9 +77,11 @@ jobs:
       - name: 冻结题集自检（题数/commit/期望集）
         run: pytest -q tests/test_locate_frozen.py
 
-      - name: cp936 编码矩阵（Windows 之外的默认编码路径）
+      - name: 非 UTF-8 locale 矩阵（LC_ALL=C → ASCII 默认编码）
         env:
-          # 强制走非 UTF-8 默认编码，复现 cp936 类问题
+          # 强制走非 UTF-8 默认编码。注意：ubuntu 上 LC_ALL=C 得到的是
+          # ANSI_X3.4-1968(ASCII)，**不是 cp936**；它更严（非 ASCII 解码直接抛错），
+          # 但**不能**替代 Windows cp936 的双字节行为证据（cp936 会把 UTF-8 字节解成乱码而不报错）。
           PYTHONUTF8: "0"
           PYTHONCOERCECLOCALE: "0"
           LC_ALL: C

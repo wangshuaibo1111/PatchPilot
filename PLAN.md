@@ -40,7 +40,7 @@ P1 的驱动层与 MCP server 在二十余轮复审期间没有任何进展。
 |---|---|---|---|
 | 1 | CLI 一条命令在任意本地仓库上完成一次修复 | `pp run --repo . --issue-file bug.md` | ✅ **已完成（真机验证）**：8 节点修复闭环（`graph/repair.py`）+ `pp run`；**真机端到端（DeepSeek 真模型 + Docker 沙箱）完成一次修复并通过测试**；同一命令在 6 道自建题上全部 1 轮通过（见第 3 项） |
 | 2 | 沙箱安全边界成立 | 逃逸 / 超时 / 资源耗尽 / 恶意代码 4 类用例通过 | ✅ **已完成（第三十一轮复审 APPROVE）**：驱动层 `manager.py`（沙箱内跑 pytest → JUnit 结构化返回）＋ **4 个 MCP server**＋自建镜像；复审独立真机验证 **22/22**（只读根 / 网络 none / uid=1000 / CapEff=0 / memory.max=4g / pids.max=512 / /tmp noexec / 逃逸 junction 不进容器）、junction 矩阵 **7/7 全拒**、真机 LF 仓库 **6/6**；逃逸面经**六轮**复审逐步收口（search 剪链接 → `git apply` 写穿 → rename/copy → 解码 → stdin CRLF → **第三类子进程 I/O**）；变异自证 KILLED 覆盖 stdin / 清单道 / 字节契约 / git 环境四族；**全量单测在 cp936 与 UTF-8 两种模式下均全绿**（具体项数见每次提交的冻结自证，不写死在这里以免过期） |
-| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0025**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— **已标定 11 题**（宿主 conda py3.9 解释器），修正判分口径后实测 `pass@1 = 0/10`（1 题判 invalid 不计分母）：**改用编辑块后 pass@1 = 1/10**，「改动无法应用」由 9 降到 4、用例未通过 5（unified diff 与 sympy 大文件的上下文对不上，不是判分故障）；另在 flask 子集上 `1/2`；**均属链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
+| 3 | 端到端解析率有数字 | `pp eval --subset lite50` 输出 pass@1 + 成本 + P95 | ✅ **已有数字（自建 FastEval 6 题，勿与 SWE-bench 混谈）**：`pass@1 = 6/6 = 100%`、总成本 **\$0.0043**、平均 **8.9s**、**P95 11.3s**（`deepseek-flash`、温度 0、镜像 `patchpilot-sandbox:0.1.0-py312`）；**另**：已在**真实 SWE-bench Lite instance** 上跑通带标定门的子集 —— **已标定 11 题**（宿主 conda py3.9 解释器），修正判分口径后实测 `pass@1 = 0/10`（1 题判 invalid 不计分母）：**编辑块改造后 pass@1 = 0/10**（按全部题为 0/11）——此前报告过的 `1/10` 出自会静默改错位置的旧模块，**已作废**（见 §9）；当前失败：改动无法应用 6（多为 SEARCH 抄不中与路径猜错）、用例未通过 4、无效 1（unified diff 与 sympy 大文件的上下文对不上，不是判分故障）；另在 flask 子集上 `1/2`；**均属链路验证**；**50 题不可达**：本环境拿不到官方 per-instance 镜像（镜像仓库 403 / Docker Hub 超时）且只有 Python 3.12（旧仓库依赖已被移除的 `distutils`），详见 §9 变更日志 |
 | 4 | 评测可复现 | 公布题目 ID、温度、commit、镜像 tag，第三方可复跑 | ✅ **已完成**：报告 JSON 固定写入 `task_ids` / `temperature=0.0` / `commit` / `image` / `python` / `max_rounds`；评测集以**数据**入库（`eval/fast_corpus.json`，含每题的源码、测试与 issue 全文），基线入库（`eval/baseline.json`），`pp eval` 一条命令即可复跑并对比 |
 | 5 | 回归门禁生效 | 故意改坏 prompt → CI 变红并给出指标 diff | ✅ **已完成（真机验证）**：`pp eval --baseline eval/baseline.json` 与提交在库里的基线比，`pass@1` 退化即**退出码 2** 并打印逐题 diff；`.github/workflows/ci.yml` 两道门禁（`pp check`+单测必过、评测回归需密钥否则显式跳过）。**实测**：未改动 → 退出码 0／"无回归"；把 prompt 改成"不要输出任何 diff"→ **pass@1 100% → 50%**、退出码 **2**、点名 `fast-003-wrong-exception` 等退化题 |
 | 6 | 全链路可观测 | 每个任务有完整 trace（LLM / 工具 / 检索 / 成本） | ✅ **已完成**：修复闭环接入 `Tracer`，四类 span 齐备（`retrieval.search` / `llm.generate` / `tool.apply_patch` / `tool.run_tests`）+ token 与成本；`pp trace --limit N --verbose` 可回放。真机 trace 实测：检索 28.9ms、LLM 1557.8ms、git 393.7ms、沙箱 1855.0ms，成本 \$0.000165；未定价模型**显式标 `cost_unknown`** 而非记 0 |
@@ -341,6 +341,38 @@ D:\Code\PatchPilot\
 - **审查**：按节拍，P2 属一个新阶段，留待与该阶段一并复审
 - **提交**：见本批提交
 
+### [2026-10-17] **应用模块重写（不许损坏文件）**：撤回 1/10，以及"1/10 不是真进步"
+
+- **复审 REJECT**（第三十三轮）指出 `tools/edits.py` 会**静默产出错误改动**且报 `applied=True`，
+  并给了可复现实验。三条 BLOCKING 全部成立，已按它给的修法重写：
+  1. **不再子串匹配**：整行匹配（`return 1` 不会命中 `return 10`）；
+  2. **不吞换行**：按行数组替换，换行由周围行决定；
+  3. **读写同字节域**：`read_bytes` + 严格 UTF-8（非 UTF-8 → **拒绝**，不 `errors="replace"` 写回），
+     写回**保留原行尾风格**（CRLF 文件仍 CRLF）；
+  4. **唯一命中**：0 处或 >1 处都报错并给行号；纯空白搜索块直接拒绝；
+  5. **原子**：全部块成功才落盘，任一失败一字不写；
+  6. **语法自检**：`.py` 改完必须能 `ast.parse`，否则拒绝。
+- **结果必须改写**：用安全版模块重跑，`pass@1` 由 `1/10` 变成 **`0/10`**（全部题口径 `0/11`）。
+  也就是说：**之前的 1/10 不是真进步**，它出自一个会改错位置的模块。
+  这条比分数本身重要——它说明"分数提高"必须建立在"行为可证"之上。
+- **本轮还修了两处真因**（仍不足以把分数做上去，如实记录）：
+  - 路径容错：模型把路径写成 `<sympy/concrete/summations.py>` / 反引号包裹 / `./` 前缀 → 现在归一化；
+    路径不存在时按"基名 → 词干前缀"给出同名文件提示（`c.py` → `ccode.py`）；
+  - 上下文供给：prompt 由"文件前 2500 字符"改为**定位器命中的片段 + 行号区间**，
+    并要求 SEARCH 逐字复制；同时修了我引入的退化（`max_files` 曾按片段数算，现按路径去重）。
+- **当前失败分类（11 题）**：改动无法应用 **6**、用例未通过 **4**、无效 **1**（不计分母）。
+  6 条里多数是"搜索块抄不中"，另有路径猜错——**根因是定位/上下文，不是格式**。
+- **下一步（明确工程项）**：候选文件命中率是瓶颈（sympy 大模块里定位器常选错文件），
+  应先把"改动文件是否在候选集内"做成评测指标并优化定位，再谈 pass@1；
+  在此之前不再宣称任何 SWE-bench 分数。
+- **文件**：`tools/edits.py`（重写）、`eval/swebench.py`、`eval/locate_bench.py`、`cli.py`、
+  `.github/workflows/ci.yml`、`tests/{test_edits,test_edits_paths,test_p1_pins,test_locate_frozen}.py`、
+  `eval/{swebench_subset,swebench_report}.json`、`PLAN.md`、`README.md`
+- **验证**：`ruff` 全绿；`pytest` 见本批冻结自证；
+  编辑模块的六类损坏场景逐条有用例（逐字节断言，失败要求一字未动）。
+- **审查**：待下一轮复审
+- **提交**：见本批提交
+
 ### [2026-10-17] **修 bug 优先**：编辑块格式把"补丁打不上"从 9 题降到 4 题；pass@1 0/10 → 1/10
 
 - **先修 bug**（用户指示）：本轮最严重的缺陷是**9/10 的"候选补丁无法应用"**——不是判分问题，
@@ -385,7 +417,7 @@ D:\Code\PatchPilot\
   `_run_git` 是否真把隔离环境传下去（此前只有 `inspect.getsource` 文本断言，删掉 `env=env` 仍全绿）。
 - **P2：CI 补"复算"能力**（复审 [F]）：新增 `locate-recompute` job ——
   `pp locate --verify` 一旦发现落盘结果过期就**退出码 1**（`compare_locate_rows` 有单测），
-  另跑冻结题集自检与 **cp936/LANG=C 编码矩阵**（此前"两种编码都全绿"只有手工证据）。
+  另跑冻结题集自检与**非 UTF-8 locale 矩阵**（`LC_ALL=C`；ubuntu 上是 ASCII 而非 cp936，更严但不能替代 Windows cp936 的双字节证据——复审指出这点，已在 CI 注释里写明）。
 - **文件**：`tools/edits.py`（新增）、`eval/swebench.py`、`cli.py`、`eval/locate_bench.py`、
   `index/{lexical,vectors,retrieval}.py`、`core/preflight.py`、`tools/git_server.py`、
   `.github/workflows/ci.yml`、`tests/{test_edits,test_p1_pins,test_review_nits}.py`（新增）、

@@ -796,6 +796,12 @@ def locate(
             for score in outcome.scores
         ]
         fresh = json.loads(json.dumps(payload))
+        if verify and not out.is_file():
+            console.print(
+                f"[red]--verify 需要落盘文件存在[/red]：{out} 不存在，"
+                "无法判断基准是否过期（不允许静默重写）。"
+            )
+            raise typer.Exit(code=1)
         if verify and out.is_file():
             # **陈旧检测**：重算结果必须与落盘一致，否则 CI 变红。
             # 没有这一步，"基准数字过期"不会有任何东西来拦（复审 [F]）。

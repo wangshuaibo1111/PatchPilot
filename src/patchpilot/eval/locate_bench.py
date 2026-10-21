@@ -348,7 +348,10 @@ def cases_from_frozen(path: Path, *, git_root: Path) -> list[LocateCase]:
         tree = _materialize_commit(git_root, commit, temp_root)
         if tree is None:
             shutil.rmtree(temp_root, ignore_errors=True)
-            continue
+            raise ValueError(
+                f"冻结题集里的 commit 取不到（可能被 squash/force-push）: {commit}. "
+                "请重建 eval/locate_cases.json，不要用更小的题集继续。"
+            )
         scope_dir = tree / scope_rel
         if not scope_dir.is_dir():
             # 该 commit 还没有这个目录（早期提交），跳过并清理

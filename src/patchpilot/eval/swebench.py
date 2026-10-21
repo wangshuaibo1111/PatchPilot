@@ -99,7 +99,13 @@ class SweReport:
 
     @property
     def pass_at_1(self) -> float:
+        """分母为 valid（排除题目本身判不了的）。"""
         return self.passed / self.valid if self.valid else 0.0
+
+    @property
+    def pass_at_1_all(self) -> float:
+        """分母为**全部题**：官方 SWE-bench 的口径更接近这个（无效题也算未解决）。"""
+        return self.passed / len(self.outcomes) if self.outcomes else 0.0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -109,6 +115,7 @@ class SweReport:
                 "valid": self.valid,
                 "passed": self.passed,
                 "pass@1": round(self.pass_at_1, 4),
+                "pass@1_all": round(self.pass_at_1_all, 4),
             },
             "outcomes": [
                 {
@@ -122,6 +129,10 @@ class SweReport:
                 }
                 for o in self.outcomes
             ],
+            "note": (
+                "`pass@1` 的分母是 valid（题目本身判不了的已排除）；"
+                "`pass@1_all` 的分母是全部题，更接近官方口径。两者都给出，避免只挑好看的那个。"
+            ),
         }
 
 
@@ -333,6 +344,9 @@ class Grade:
     resolved: bool
     valid: bool
     reason: str
+    #: True 表示"题目本身判不了"（F2P 名在本仓库找不到测试文件）；
+    #: False 且 `valid=False` 表示"这一跑没跑出可解析结果"（超时/输出截断），要计入分母。
+    invalid_task: bool = False
     targets: tuple[tuple[str, tuple[str, ...]], ...] = ()
     observed: tuple[tuple[str, str], ...] = ()
 
@@ -358,6 +372,7 @@ def grade_fail_to_pass(
         return Grade(
             resolved=False,
             valid=False,
+            invalid_task=False,
             reason="日志里解析不到任何用例结果（测试没跑起来或输出被截断）",
         )
     observed: list[tuple[str, str]] = []
@@ -384,6 +399,7 @@ def grade_fail_to_pass(
         return Grade(
             resolved=False,
             valid=False,
+            invalid_task=True,
             reason=f"有 {len(unresolved)} 个 FAIL_TO_PASS 名在本仓库找不到测试文件: "
             + ", ".join(unresolved[:3]),
             targets=tuple(targets.items()),
@@ -628,7 +644,9 @@ def build_repair_prompt(
 ) -> tuple[str, int]:
     """用 P2 的定位器选候选文件，拼出"请给补丁"的 prompt。返回 `(prompt, 可读候选数)`。
 
-    复用闭环的做法（先定位再让模型写 diff），这样 SWE-bench 评测走的就是**上线那条路**。
+    先定位再让模型给改动，与闭环同构；但**产物格式不同**：评测走 search/replace 块 +
+    `tools.edits.apply_model_output`，而产品路径（`graph/repair.py`）目前仍要 unified diff。
+    两者尚未统一——这是已知欠债，不要以为这里修好了产品链路。
 
     **没有索引缓存**（第三十二轮复审的 BLOCKING）：上一版按"仓库名"缓存索引，
     11 题全是 sympy → 10 题的候选是用第 1 题那个 commit 的索引选出来的，
@@ -638,21 +656,42 @@ def build_repair_prompt(
     from patchpilot.index.symbols import index_repo
 
     index = index_repo(repo_dir)
-    paths = Localizer(index).localize_paths(instance.problem, limit=max_files)
+    localizer = Localizer(index)
+    # localize 返回的是**片段**，同一文件可能有多个片段；这里按路径去重，
+    # 保证 max_files 真的是"候选文件数"（否则两个片段占满名额，文件多样性下降）。
+    hits = localizer.localize(instance.problem, limit=max_files * 4)
+    picked = []
+    seen_paths: set[str] = set()
+    for hit in hits:
+        if hit.chunk.path in seen_paths:
+            continue
+        seen_paths.add(hit.chunk.path)
+        picked.append(hit)
+        if len(picked) >= max_files:
+            break
     snippets: list[str] = []
     readable = 0
-    for rel in paths:
-        try:
-            text = (repo_dir / rel).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+    for hit in picked:
+        chunk = hit.chunk
+        body = chunk.text
+        if not body.strip():
+            try:
+                raw = (repo_dir / chunk.path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            body = raw[:snippet_chars]
         readable += 1
-        snippets.append(f"### {rel}\n```\n{text[:snippet_chars]}\n```")
+        # **给上下文窗口，而不是文件头**：模型要逐字抄 SEARCH，抄不到就必然失败。
+        snippets.append(
+            f"### {chunk.path}（行 {chunk.start_line}-{chunk.end_line}）\n```\n{body}\n```"
+        )
     prompt = "\n".join(
         [
             "你是代码修复助手。下面是仓库里真实 issue 的描述。",
             "",
-            "**请用 search/replace 块输出改动**（比 unified diff 更容易正确应用）。格式：",
+            "**请用 search/replace 块输出改动**（比 unified diff 更容易正确应用）。",
+            "SEARCH 必须**逐字复制**下面片段里的原文（含缩进），只放需要改的那几行；",
+            "路径必须用下面出现过的路径，不要自己拼、不要加尖括号/反引号。格式：",
             "",
             "<仓库相对路径>",
             "<<<<<<< SEARCH",
@@ -732,13 +771,18 @@ def evaluate(
             _rc, log = run_tests(instance, repo_dir, node_ids)
             grade = grade_fail_to_pass(instance.fail_to_pass, targets, log)
             observed = grade.observed
-            if not grade.valid:
-                status = "invalid"
+            if not grade.invalid_task and not grade.valid:
+                # "测试没跑出可解析结果"（超时、输出被截断）不是**题目**无效，
+                # 而是这一跑失败 → 记 error 并**计入分母**，否则 pass@1 只会偏高。
+                status = "error"
                 detail = f"[{result.method}] {grade.reason}"
                 break
             if grade.resolved:
                 status = "passed"
-                detail = f"[{result.method}] {grade.reason}（第 {rounds} 轮）"
+                applied = ",".join(f"{path}:{span}" for path, _m, span in result.applied_blocks)
+                detail = (
+                    f"[{result.method}] {grade.reason}（第 {rounds} 轮；改动 {applied or '-'}）"
+                )
                 break
             detail = f"[{result.method}] {grade.reason}"
             reset_repo(repo_dir, instance, keep_test_patch=True)
@@ -757,7 +801,8 @@ def evaluate(
     meta = {
         "instances": [i.instance_id for i in instances],
         "images": sorted({i.image for i in instances if i.image}),
-        "grading": "pytest -rA 状态表逐条比对 F2P；SKIPPED 计失败；无结果判 invalid",
+        "grading": "pytest -rA 状态表逐条比对 F2P；SKIPPED 计失败；"
+        "F2P 名解析不到 → invalid（不计分母）；测试跑不出结果 → error（计入分母）",
         "note": (
             "N 很小，只能当链路验证；并非论文级 pass@1。"
             "受限原因见 eval/swebench_subset.json 的 notes 与 PLAN。"

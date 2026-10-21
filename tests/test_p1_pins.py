@@ -87,6 +87,46 @@ def test_channel_cutoff_is_documented_and_sane() -> None:
     assert CHANNEL_CUTOFF < 60, "截断太宽等于没截断（融合 pool 默认 60）"
 
 
+def test_channel_cutoff_boundary_is_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """钉住**边界语义**：第 `CHANNEL_CUTOFF` 名的票算，第 `CHANNEL_CUTOFF+1` 名的不算。
+
+    复审指出把常量改成 2 或 59 时 `tests/test_p1_pins.py` 仍全绿——因为只断言了范围。
+    这里直接验证两个边界，任何取值改动都会同时触发其中一侧。
+    """
+    import patchpilot.index.retrieval as module
+
+    index = _two_chunk_index(tmp_path)
+    chunks = [chunk for file in index.files for chunk in file.chunks]
+    first, second = chunk_id(chunks[0]), chunk_id(chunks[1])
+    cutoff = module.CHANNEL_CUTOFF
+
+    def build(localizer, rank_of_first: int):
+        monkeypatch.setattr(localizer, "_symbol_ranks", lambda seeds, *, pool: {second: 1})
+        monkeypatch.setattr(
+            localizer, "_lexical_ranks", lambda query, *, pool: {first: rank_of_first}
+        )
+        monkeypatch.setattr(localizer, "_vector_ranks", lambda query, *, pool: {})
+        monkeypatch.setattr(localizer, "_graph_ranks", lambda seeds, *, pool: {})
+        return [chunk.chunk.path for chunk in localizer.localize("alpha", limit=5)]
+
+    localizer = Localizer(
+        index, config=LocalizerConfig(use_graph=False, use_rerank=False, weights={"lexical": 5.0})
+    )
+    # 恰好第 cutoff 名：算 → a.py（权重 5 让它压过 b.py 的一票）
+    inside = build(localizer, cutoff)
+    # 第 cutoff+1 名：不算 → a.py 无票，b.py 第一
+    outside = build(localizer, cutoff + 1)
+
+    assert inside[0] == "a.py", (
+        f"第 {cutoff} 名的票应当计入；实际 {inside}。若这里失败，说明常量被改成更小的值"
+    )
+    assert outside[0] == "b.py", (
+        f"第 {cutoff + 1} 名的票不应计入；实际 {outside}。若这里失败，说明常量被改成更大的值"
+    )
+
+
 # ---------------------------------------------------------------- M6：纯中文不误命中（真实规模）
 
 
